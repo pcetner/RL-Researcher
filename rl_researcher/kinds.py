@@ -124,6 +124,8 @@ class RunContext:
     #: provenance must take it from here rather than asking git, or a regenerated document
     #: attributes measurements to code that did not make them.
     commit: str = ""
+    #: Which version of this package produced them, under the same rule.
+    framework: str = ""
     #: The summary this run is replacing, if there is one. On a rebuild nothing was prepared,
     #: so anything ``summarise`` would have taken from ``prepare`` — the data split, a snapshot
     #: manifest — is not available to recompute and must be carried forward from here.

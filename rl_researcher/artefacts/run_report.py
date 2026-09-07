@@ -396,6 +396,7 @@ def _provenance(spec: Any, summary: Dict[str, Any], kind: Any = None) -> List[Tu
         ("Spec", f"{_posix(spec.source_path) or spec.name} "
                  f"(fingerprint {_fingerprint(spec, summary)})"),
         ("Commit", str(summary.get("git_sha", "unknown"))[:12]),
+        ("Framework", str(summary.get("rl_researcher") or "unknown")),
         ("Data", _data(summary) or "—"),
         ("Device", str(summary.get("device_name") or summary.get("device") or "unknown")),
         ("Budget", f"{budget.get('max_steps', '?')} steps or "
