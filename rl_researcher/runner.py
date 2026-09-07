@@ -68,17 +68,21 @@ def _no_page_factory(spec: RunSpec, kind: RunKind, out: Path, log: Log) -> PageW
     return _no_page
 
 
-def _run_checks(kind: RunKind, spec: RunSpec, config: Any, log: Log, skip: bool) -> None:
+def _run_checks(kind: RunKind, spec: RunSpec, config: Any, log: Log, skip: bool,
+                out: Optional[Path] = None) -> None:
     """Ask the kind what it knows before the first unit, and refuse on anything at error level.
 
     This runs before ``prepare``, so a refusal costs nothing: no model is loaded, no engine has
     booted, no unit directory exists. The alternative the kinds were writing before this existed
     was a raise inside ``run_unit``, which discovers halfway through the second unit that the
     data was wrong and throws away everything in front of it.
+
+    ``out`` reaches the ``run``-stage checks, whose question is about this machine now rather
+    than about the registration.
     """
     from rl_researcher.findings import collect, errors
 
-    findings = collect(kind, spec, config)
+    findings = collect(kind, spec, config, out)
     for f in findings:
         log(f"check [{f.check}] {f.level}: {f.message}")
     bad = errors(findings)
@@ -150,6 +154,11 @@ def run(
     try:
         if gate is not None:
             gate(spec, kind, out, max_steps=max_steps, max_seconds=max_seconds, config=config, device=device)
+        else:
+            # Said out loud for the same reason `--no-check` is: a gate walked past leaves the
+            # same numbers on disk as one that was cleared, and the log is the only place that
+            # can say which happened. The library default is no gate, so this is honest there too.
+            log("no cost gate was applied to this run (--no-gate, or a caller that passed none)")
         lock = acquire_lock(out, spec.name, log)
         install_stop_handler()
         try:
@@ -159,9 +168,14 @@ def run(
             page = _no_page
         page(force=True)
         for g in kind.guards(spec):
-            if g.is_blocked() and not allow_guards:
+            if not g.is_blocked():
+                continue
+            if not allow_guards:
                 raise GuardBlocked(f"{g.name}: {g.message}")
-        _run_checks(kind, spec, config, log, skip_checks)
+            # A waived guard is a condition the kind said a run must not start under, started
+            # anyway. It goes in the run's own log beside the numbers it produced.
+            log(f"waived a blocked guard with --allow-guards: {g.name}: {g.message}")
+        _run_checks(kind, spec, config, log, skip_checks, out)
         all_units = kind.units(spec)
         selected = list(all_units)
         if units:

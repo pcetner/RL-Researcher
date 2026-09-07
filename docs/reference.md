@@ -73,11 +73,20 @@ exists, and the lock is released. An error-level finding refuses the run. The al
 kind would otherwise write is a raise inside `run_unit`, which discovers halfway through the
 second unit that the data was wrong and throws away everything in front of it.
 
+Both the `check` and the `run` stages are asked, so a launch is refused by C06 — anything under
+the output directory staged for commit while the run holds the lock — as well as by the kind's
+own findings. The pre-commit hook asks C06 at the other end of the same mistake; the runner asks
+it because the hook is not installed everywhere.
+
 `--no-resume` starts every unit over, discarding checkpoints. `--allow-guards` runs even when a
 guard is blocked. `--no-check` runs even when a check returned an error; the findings and the
 waiver are both written to the run's own log, because the numbers the run produces stand on a
 registration something objected to. `--no-gate` skips the cost gate; it exists because an
-estimate can be wrong about a machine it has never seen, and it is recorded in the log.
+estimate can be wrong about a machine it has never seen.
+
+All three waivers are written to the run's own log, and that is the point of them: a gate walked
+past and a guard waived leave the same numbers on disk as a run that cleared both, so the log is
+the only place that can say which happened.
 
 `--units` names the arms or unit identifiers this machine takes, so a run can be split across
 machines and the directories merged afterwards. The summary covers whichever units exist and

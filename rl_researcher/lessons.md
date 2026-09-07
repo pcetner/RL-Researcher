@@ -102,7 +102,9 @@ lock file. A lock committed to the repository looks alive to every later checkou
 run on that directory is refused for a process that ended days ago.
 
 **Rule.** Never stage anything under a run directory whose lock is alive. Not `git add -A`
-while a run is in flight, ever.
+while a run is in flight, ever. Asked at both ends of the mistake: the pre-commit hook refuses
+the commit, and the runner refuses to launch over a directory that already has staged changes,
+because the hook is not installed everywhere.
 
 **Check: C06**
 
