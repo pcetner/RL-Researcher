@@ -94,7 +94,11 @@ def test_a_hot_stop_leaves_a_resumable_unit_that_continues(project, tmp_path):
     from rl_researcher.config import kind_for, load_config, out_dir_for
     from tests.conftest import make_project
 
-    make_project(project, max_steps=200, seeds=(0,), extra="stop_at_step = 60\n")
+    # One seed, and `screening` says so — C05 refuses a single seed that does not
+    # declare itself, because one seed read as a difference is how a study comes to
+    # say nothing.
+    make_project(project, max_steps=200, seeds=(0,),
+                 extra="screening = true\nstop_at_step = 60\n")
     config = load_config()
     spec_path = project / "studies" / "toy-line-fit.toml"
     kind = kind_for(spec_path, config)
