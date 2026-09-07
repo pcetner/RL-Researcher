@@ -79,3 +79,45 @@ def test_no_colour_is_baked_where_a_theme_cannot_reach_it():
     without_tokens = re.sub(r"@media[^{]*\{.*?\n  \}", "", without_tokens, flags=re.S)
     assert not re.search(r"#[0-9a-fA-F]{3,6}\b", without_tokens), \
         "a baked hex outside the token definitions cannot follow the theme"
+
+
+# ── the stylesheet the charts are drawn against ───────────────────────────────────────────
+# Moved from Auto-SM64's dashboard tests, where they asserted against that project's own
+# stylesheet. The rules are the package's, and they live in LEGACY_DASHBOARD_CSS: this package
+# currently carries two chart implementations, `charts.py` with that stylesheet and
+# `blocks/viz.py` with BASE_CSS. Step 6 merges them; until it does, each has to be checked
+# against the sheet it is actually drawn with, because a rule in the wrong one is a chart with
+# markup and no ink.
+
+def test_the_curve_axis_lines_are_drawn_and_not_just_present():
+    """They shipped with no stroke rule, so they were in the markup and invisible on the page."""
+    from rl_researcher.style import LEGACY_DASHBOARD_CSS
+
+    rule = LEGACY_DASHBOARD_CSS.split(".spark .cax")[1].split("}}")[0]
+    assert "stroke:currentColor" in rule and "opacity:" in rule
+
+
+def test_the_y_labels_are_centred_on_the_ends_they_mark():
+    """Stacked flush, each sat about a tenth of the plot away from its own extreme."""
+    from rl_researcher.style import LEGACY_DASHBOARD_CSS
+
+    for sel in (".curvebox .yax .hi", ".curvebox .yax .lo"):
+        rule = LEGACY_DASHBOARD_CSS.split(sel)[1].split("}}")[0]
+        assert "translateY(" in rule, sel
+
+
+def test_no_chart_colour_is_a_baked_hex_in_either_stylesheet():
+    """A hex here is the light-mode hex, and dark mode then carries brick red on near-black.
+
+    The tokens are declared once, in BASE_CSS's `:root`; every other reference in either sheet
+    has to go through `var()` or dark mode cannot move it.
+    """
+    from rl_researcher import plotstyle as ps
+    from rl_researcher.style import BASE_CSS, LEGACY_DASHBOARD_CSS
+
+    for name in ("CRIT", "OK", "WARN"):
+        both = BASE_CSS + LEGACY_DASHBOARD_CSS
+        assert both.count(getattr(ps, name)) == 1, name
+    for token in ("--crit", "--ok", "--warn"):
+        assert f"var({token})" in LEGACY_DASHBOARD_CSS, token
+        assert token in BASE_CSS, token
