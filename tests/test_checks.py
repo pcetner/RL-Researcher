@@ -375,3 +375,22 @@ def test_lint_asks_the_project_wide_checks_and_the_per_spec_ones(project, capsys
 
     _load(project, seeds=(0, 1, 2))
     assert lint_main(["--stage", "ci"]) == 0
+
+
+def test_lint_outside_a_project_still_asks_the_checks_that_need_no_spec(tmp_path, monkeypatch,
+                                                                       capsys):
+    """The package is not a project, and C10 and C11 are what it runs against its own skills
+    and lessons. Raising a FileNotFoundError there means CI cannot check the tooling."""
+    from rl_researcher.lint import main as lint_main
+
+    monkeypatch.chdir(tmp_path)
+    assert lint_main(["--stage", "ci"]) == 0
+    said = capsys.readouterr().out
+    assert "no project here" in said and "asked ci" in said
+
+    assert lint_main(["--stage", "run,lint"]) == 0
+    said = capsys.readouterr().out
+    assert "skipped run (they need a spec)" in said
+
+    assert lint_main(["--stage", "check"]) == 1          # nothing it could ask
+    assert "no rl-researcher.toml" in capsys.readouterr().out

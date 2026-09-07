@@ -76,7 +76,28 @@ def main(argv=None) -> int:
         print(f"unknown stage(s): {', '.join(unknown)}; known: {', '.join(STAGES)}")
         return 1
 
-    config = load_config()
+    # The `ci` checks are about the tooling itself and need no project: C10 and C11 are what
+    # this package runs against its own skills and lessons. Outside a project, ask those and
+    # say plainly that the rest had nothing to ask about, rather than raising.
+    try:
+        config = load_config()
+    except FileNotFoundError as exc:
+        outside = [s for s in stages if s in PROJECT_STAGES]
+        if not outside:
+            print(f"{exc}")
+            return 1
+        found = []
+        for stage in outside:
+            found += run_checks(stage, root=Path.cwd())
+        for f in found:
+            print(f"  [{f.check}] {f.level}: {f.message}")
+        skipped = [s for s in stages if s not in PROJECT_STAGES]
+        n = len([f for f in found if f.level == "error"])
+        print(f"no project here: asked {', '.join(outside)}"
+              + (f", skipped {', '.join(skipped)} (they need a spec)" if skipped else "")
+              + f" — {n} error(s), {len(found) - n} warning(s)")
+        return 1 if any(f.level == "error" for f in found) else 0
+
     found = lint(config, stages=stages)
     errors = [f for f in found if f.level == "error"]
     for f in sorted(found, key=lambda f: (f.level != "error", f.check, f.message)):
