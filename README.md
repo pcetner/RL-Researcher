@@ -111,13 +111,13 @@ the next `state` reads them.
 
 ## What is not built yet
 
-The package is incomplete. These are not present:
+The package is incomplete. One thing is not present: **the diagnosis writer**. Its layout is
+declared in `rl_researcher/artefacts/layouts.py` and C12 already refuses a diagnosis that does
+not carry its post-hoc banner, but nothing writes one yet. `rl_researcher.artefacts` has the
+report, the measurement, the state page, the live dashboard, the index and the shared
+statistics.
 
-- the diagnosis writer. `rl_researcher.artefacts` has the report, the measurement, the state
-  page, the live dashboard, the index and the shared statistics.
-
-One hook on the run-kind protocol — `blocks` — is read by nothing yet. A kind may implement it
-now; it will take effect when the diagnosis writer lands.
+Every hook on the run-kind protocol is read by something.
 
 ## Commands
 
@@ -169,6 +169,7 @@ Full argument lists are in [docs/reference.md](docs/reference.md#commands).
 
 ## Documentation
 
+- [Tutorial](docs/tutorial.md) — an empty directory to a decided run, writing a kind on the way.
 - [Concepts](docs/concepts.md) — the vocabulary, and what each piece is responsible for.
 - [Writing a run kind](docs/run-kinds.md) — the extension point, method by method.
 - [Reference](docs/reference.md) — commands, configuration, on-disk formats, exit codes.

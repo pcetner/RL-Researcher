@@ -27,8 +27,9 @@ Exit 0, or 1 if a finding has level `error`.
 Asks the kind for a content hash of the data the spec is registered against and writes it into
 the spec. A kind with nothing to pin says so and exits 0.
 
-Exit 0. It also runs pin-stage findings and would exit 1 on an error, but the check registry
-those come from is not built yet, so that path is currently unreachable.
+Exit 0, or 1 on a pin-stage error finding. C01 is asked here — whether the instrument
+measurement that says a metric's bar is reachable on this data has a ledger row — because
+pinning is the last moment before a registration is fixed.
 
 ### `estimate <spec> [--out DIR] [--max-steps N] [--max-seconds S] [--units A,B]`
 

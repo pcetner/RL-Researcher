@@ -697,8 +697,7 @@ def sections_of(kind: RunKind) -> Tuple[str, ...]:
     return tuple(str(n) for n in named) if named else DEFAULT_SECTIONS
 
 
-def kind_blocks(kind: RunKind, spec: RunSpec, data: DashboardData, view: str,
-                out: Optional[Path] = None) -> List[Any]:
+def kind_blocks(kind: RunKind, spec: RunSpec, data: DashboardData, view: str) -> List[Any]:
     """What the kind wants to add to this section, through the protocol's ``blocks`` hook.
 
     This is the hook the protocol has always declared and nothing ever called. A kind's own
@@ -709,20 +708,22 @@ def kind_blocks(kind: RunKind, spec: RunSpec, data: DashboardData, view: str,
     if not callable(fn):
         return []
     try:
-        got = fn(spec, data.summary or {}, out or Path("."), view)
+        # The run's own directory, from the status the page was collected from: a
+        # caller that has to remember to pass it is a caller that will not, and the
+        # kind then reads a directory that is not the run's.
+        got = fn(spec, data.summary or {}, Path(data.status.out), view)
     except Exception:  # noqa: BLE001 - a page must never take a run down
         return []
     return [b for b in (got or []) if isinstance(b, Block)]
 
 
-def section(name: str, spec: RunSpec, kind: RunKind, data: DashboardData,
-            out: Optional[Path] = None) -> List[Any]:
+def section(name: str, spec: RunSpec, kind: RunKind, data: DashboardData) -> List[Any]:
     """One named section's blocks, the kind's own before the framework's.
 
     An unknown name renders as nothing rather than raising. A page is the artefact a person
     opens *because* something has gone wrong; it must not be the second thing to break.
     """
-    mine = kind_blocks(kind, spec, data, name, out)
+    mine = kind_blocks(kind, spec, data, name)
     if mine:
         return mine
     fn = SECTIONS.get(name)
@@ -757,8 +758,7 @@ def page_foot(spec: RunSpec, kind: RunKind, data: DashboardData, *, refresh: boo
               else "rendered once, the run has ended"))
 
 
-def render(spec: RunSpec, kind: RunKind, data: DashboardData, *, refresh: bool = True,
-           out: Optional[Path] = None) -> str:
+def render(spec: RunSpec, kind: RunKind, data: DashboardData, *, refresh: bool = True) -> str:
     """The live page for one run.
 
     ``refresh`` asks for a self-reloading page; it is granted only while the run is still
@@ -774,7 +774,7 @@ def render(spec: RunSpec, kind: RunKind, data: DashboardData, *, refresh: bool =
                          Progress(fraction=data.done_steps / max(data.total_steps, 1),
                                   label="budget")]
     for name in sections_of(kind):
-        blocks += section(name, spec, kind, data, out)
+        blocks += section(name, spec, kind, data)
     blocks.append(page_foot(spec, kind, data, refresh=refresh))
     page = Page(kind="dashboard", title=f"{spec.name} · {kind.name} dashboard",
                 blocks=blocks, chip_text=f"{data.status.state}{beat}",
@@ -789,8 +789,7 @@ def write_dashboard(spec: RunSpec, kind: RunKind, out: Path, path: Optional[Path
     out = Path(out)
     target = Path(path) if path else out / "dashboard.html"
     return write_page(
-        lambda *, refresh=refresh: render(spec, kind, collect(spec, kind, out), refresh=refresh,
-                                          out=out),
+        lambda *, refresh=refresh: render(spec, kind, collect(spec, kind, out), refresh=refresh),
         target, refresh=refresh)
 
 

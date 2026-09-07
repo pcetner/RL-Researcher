@@ -9,7 +9,8 @@ The worked example throughout is `rl_researcher/examples/toy/kind.py`, which fit
 points and is short enough to read in one sitting.
 
 Read [Concepts](concepts.md) first. The terms *unit*, *arm*, *bar* and *fingerprint* are used
-here without redefinition.
+here without redefinition. [The tutorial](tutorial.md) builds a kind from nothing if you would
+rather see one whole before reading the parts.
 
 ## The smallest kind
 
@@ -209,15 +210,11 @@ to make impossible, so the kind that understands the old shape translates on rea
 
 ### `curves(spec) -> list[CurveSpec]`
 
-*Read by nothing yet: the dashboard is not built.*
-
-Which series in a unit's `history` a dashboard should draw, with a title each, and optionally the
+Which series in a unit's `history` the dashboard should draw, with a title each, and optionally the
 registered metric whose bar is the series' floor. A curve drawn with its floor shows a plateau
 under the bar as a decision to make rather than as a line going along.
 
 ### `log_vocab() -> LogVocab`
-
-*Read by nothing yet: the dashboard is not built.*
 
 How the run's log should be read: substrings that mark a notable line and the tone each gets, and
 a regular expression matching a routine step line so that bursts of them can be thinned. A log
@@ -235,17 +232,21 @@ runner with a subtly different definition.
 
 ### `instrument_for(metric) -> str | None`
 
-*Read by nothing yet: the check that uses it is not built.*
-
-The offline measurement that calibrates a metric, if one exists. Intended for the check that a
-metric's instrument has been calibrated on this data before a run is pinned to it.
+The offline measurement that calibrates a metric, if one exists. C01 asks it at `pin` — has that
+measurement a ledger row on this data? — and C03 asks it at `check`: a bar above everything the
+instrument has ever measured is a bar every arm will miss by about the same distance.
 
 ### `blocks(spec, summary, out, view) -> list`
 
-*Read by nothing yet: the writers that would ask for these are not built.*
+Extra blocks for one named view, for a kind that has something to show which the generic writer
+does not know about. The live page asks it for every section it draws, before its own: a kind
+that answers for `"live"` gets its panel there and the framework's everywhere else.
 
-Extra blocks for a given view of an artefact, for a kind that has something to show which the
-generic writer does not know about.
+Return :class:`rl_researcher.blocks.Block` objects, not markup. A block declares the CSS classes
+it emits, states in its markdown every number its page states, and fetches nothing — which is
+what stops a kind's panel being the one part of a page that none of those rules reach. Anything
+returned that is not a `Block` is dropped, and a hook that raises costs its panel rather than
+the page.
 
 ### Attributes read by name
 
