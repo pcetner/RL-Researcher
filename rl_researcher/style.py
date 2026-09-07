@@ -23,9 +23,12 @@ def tint(token: str, pct: int) -> str:
     return f"color-mix(in srgb, var({token}) {pct}%, transparent)"
 
 
+#: The body of the theme-and-scroll script, with no ``<script>`` tags of its own: every caller
+#: wraps it. It used to carry its own tags, and because the callers wrapped it anyway the page
+#: shipped three opens and two closes, so the browser read the literal text ``<script>`` as the
+#: first token of the program and threw a SyntaxError. The theme toggle and the scroll restore
+#: were dead in every page this package rendered, silently, because a dead script is invisible.
 THEME_SCRIPT = """
-<script>
-<script>
 (function () {
   var KEY = 'rl-theme', POS = 'rl-scroll-' + location.pathname;
   function apply(mode) {
@@ -56,7 +59,7 @@ THEME_SCRIPT = """
     }, { passive: true });
   });
 })();
-</script>"""
+"""
 
 THEME_BUTTONS = ('<div class="theme">'
                  '<button type="button" data-mode="system" aria-pressed="true">auto</button>'
