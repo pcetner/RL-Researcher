@@ -208,6 +208,11 @@ def savefig(fig, path: Path, dpi: int = 150) -> Path:
 def fmt(v: float) -> str:
     if v != v:
         return "n/a"
+    if v in (float("inf"), float("-inf")):
+        # The same word `charts.fmt` uses. A figure's axis label reading `inf` beside a table
+        # reading `diverged` is two names for one event, and the reader has to work out that
+        # they are the same one.
+        return "diverged"
     a = abs(v)
     if a >= 100:
         return f"{v:.0f}"
