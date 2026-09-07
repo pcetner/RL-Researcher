@@ -17,6 +17,7 @@ arithmetic and different timestamp handling.
 from __future__ import annotations
 
 import html
+import os
 import math
 import re
 import time
@@ -820,3 +821,136 @@ def write_dashboard(spec: RunSpec, kind: RunKind, out: Path, path: Optional[Path
     return write_page(
         lambda *, refresh=refresh: render(spec, kind, collect(spec, kind, out), refresh=refresh),
         target, refresh=refresh)
+
+
+# ── the index over every run ──────────────────────────────────────────────────────────────
+#
+# One index, every kind. It was per-project and per-kind because `survey` loaded one kind's
+# spec loader directly; it dispatches through `kind_for` now, so a study and an engine loop
+# appear in the same table and a third kind needs no change here at all.
+
+#: Worst news first. A finished run is the least urgent thing on the page; a failed one is the
+#: most, and a stale one is a failure that has not admitted it yet.
+STATE_RANK = {"FAILED": 0, "STALE": 1, "running": 2, "stopped": 3, "hot-stopped": 3,
+              "finished": 4, "not started": 5}
+
+
+@dataclass
+class IndexRow:
+    """One run's line on the index."""
+
+    name: str
+    kind: str
+    spec: Optional[RunSpec] = None
+    out: Optional[Path] = None
+    data: Optional[DashboardData] = None
+    state: str = "not started"
+    tone: str = "muted"
+    headline: str = ""
+    error: str = ""
+
+
+def survey(config: Any) -> List[IndexRow]:
+    """One row per spec under ``[paths].specs``, whatever kind each one names."""
+    from rl_researcher.config import kind_for, out_dir_for
+
+    rows: List[IndexRow] = []
+    for path in sorted(Path(config.path("specs")).glob("*.toml")):
+        try:
+            kind = kind_for(path, config)
+            spec = kind.load(path)
+        except Exception as exc:  # noqa: BLE001 - one broken spec must not hide the others
+            # Named, not skipped. A spec that stopped parsing is a thing to fix, and the index
+            # is where a person would look for it; dropping the row hides the only symptom.
+            rows.append(IndexRow(name=path.stem, kind="?", state="unreadable", tone="crit",
+                                 error=f"{type(exc).__name__}: {exc}"))
+            continue
+        out = out_dir_for(spec, config)
+        data = collect(spec, kind, out) if out.is_dir() else None
+        rows.append(IndexRow(
+            name=spec.name, kind=kind.name, spec=spec, out=out, data=data,
+            state=data.status.state if data else "not started",
+            tone=data.status.tone if data else "muted",
+            headline=headline(spec, kind, data) if data else ""))
+    rows.sort(key=lambda r: (STATE_RANK.get(r.state, 9), r.name))
+    return rows
+
+
+def index_row(row: IndexRow, base: Path) -> str:
+    """One line, its link relative to wherever the index itself is written.
+
+    Different kinds have different output roots, so a link built by joining the run's name to
+    the index's own directory resolves only for the kind whose root the index happens to sit
+    in. Every other row's link is dead, which the page has no way to show.
+    """
+    e = html.escape
+    d = row.data
+    if row.spec is None:
+        return (f'<tr><td class="cell">{e(row.name)}</td>'
+                f'<td><span class="chip t-crit">{e(row.state)}</span></td>'
+                f'<td colspan="3" class="note">{e(row.error)}</td></tr>')
+    done = f"{d.status.done}/{len(d.units)}" if d else "—"
+    pct = (100.0 * d.done_steps / max(d.total_steps, 1)) if d else 0.0
+    href = ""
+    if d is not None and row.out is not None:
+        href = os.path.relpath(row.out / "dashboard.html", base).replace(os.sep, "/")
+    link = f'<a href="{e(href)}">{e(row.name)}</a>' if href else e(row.name)
+    return f"""
+    <tr>
+      <td class="cell">{link}<span class="seed">{e(row.kind)}</span></td>
+      <td><span class="chip t-{row.tone}">{e(row.state)}</span></td>
+      <td class="num">{done}<span class="of"> units</span>
+        <div class="track"><i style="width:{pct:.1f}%;background:{ps.ACCENT}"></i></div></td>
+      <td class="num">{duration(d.eta_all) if d else '—'}</td>
+      <td class="metrics">{row.headline or '<span class="of">no finished unit yet</span>'}</td>
+    </tr>"""
+
+
+def render_index(rows: Sequence[IndexRow], base: Path, *, title: str = "runs",
+                 refresh: bool = True) -> str:
+    body = (f'<div class="head"><h1>{html.escape(title)}</h1>'
+            f'<span class="chip t-muted">{len(rows)} registered</span>'
+            f'<span class="spacer"></span>{THEME_BUTTONS}</div>'
+            f'<div class="panel scroll"><table>'
+            f'<tr><th>run</th><th>state</th><th>units</th><th>left</th><th>best so far</th></tr>'
+            f'{"".join(index_row(r, base) for r in rows)}</table></div>'
+            f'<div class="foot">Failed and stale first, then running, then finished. '
+            f'Refreshes every {REFRESH_SECONDS}s. '
+            f'Rendered {time.strftime("%H:%M:%S")}.</div>')
+    return shell(title, body, refresh=refresh)
+
+
+def write_index(config: Any, path: Optional[Path] = None, *, refresh: bool = True) -> Path:
+    """The index beside the run directories, so a relative link to one of them resolves."""
+    target = Path(path) if path else config.path("state") / "index.html"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    return write_page(
+        lambda *, refresh=refresh: render_index(survey(config), target.parent,
+                                                title=config.name, refresh=refresh),
+        target, refresh=refresh)
+
+
+def page_writer_factory(spec: RunSpec, kind: RunKind, out: Path,
+                        log: Callable[[str], None]) -> Callable[..., None]:
+    """What ``rl_researcher.run`` hands the runner to drive from its heartbeat.
+
+    The config is found by walking up from the run's own output directory rather than passed
+    in, because the runner's ``page_writer`` seam is deliberately narrow: a page is not
+    allowed to be a reason the runner's signature grows. If there is no config above ``out``
+    -- a run driven straight from the library, in a temp directory -- the index is skipped and
+    the run's own page is still written.
+    """
+    from rl_researcher.config import load_config
+
+    also: Optional[Callable[[], None]] = None
+    try:
+        config = load_config(out, required=True)
+    except (FileNotFoundError, OSError):
+        pass
+    else:
+        def also() -> None:
+            """The index always refreshes: other runs on it may still be going."""
+            write_index(config)
+    return periodic_writer(
+        lambda *, refresh=True: render(spec, kind, collect(spec, kind, out), refresh=refresh),
+        Path(out) / "dashboard.html", log=log, also=also)
