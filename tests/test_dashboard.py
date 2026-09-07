@@ -17,8 +17,9 @@ pytest.importorskip("matplotlib")
 pytestmark = [pytest.mark.tier1]
 
 from rl_researcher.artefacts.dashboard import (  # noqa: E402
-    DEFAULT_VOCAB, chip, collect, format_log, history_of, last_of, metrics_of, periodic_writer,
-    pick_log, vocab_of, write_page)
+    DEFAULT_VOCAB, arm_table, bubble, chip, collect, curves_of, failed_panel, finished_table,
+    floors_of, format_log, headline, history_of, last_of, metric_rows, metrics_of, notes,
+    periodic_writer, pick_log, queued_panel, running_table, vocab_of, write_page)
 from rl_researcher.kinds import LogVocab  # noqa: E402
 from rl_researcher.units import unit_dir  # noqa: E402
 
@@ -266,3 +267,237 @@ def test_the_index_is_rewritten_on_the_same_tick(tmp_path):
     write(force=True)
     write(force=True)
     assert len(hits) == 2
+
+
+# ── the panels ────────────────────────────────────────────────────────────────────────────
+
+def _agg_of(spec, kind, out):
+    from rl_researcher.artefacts.report import aggregate
+
+    data = collect(spec, kind, out)
+    return data, aggregate([u.result or {} for u in data.with_metrics()],
+                           [m.name for m in spec.metrics])
+
+
+def test_the_scorecard_exists_before_anything_finishes(toy):
+    """A panel that does not exist yet cannot tell a reader what is being measured."""
+    config, kind, spec, out = toy
+    data = collect(spec, kind, out)
+    rows = metric_rows(spec, kind, data.with_metrics(), data.order)
+    for m in spec.metrics:
+        assert kind.registry.title(m.name) in rows
+    assert 'class="mrow"' in rows and rows.count('class="mrow"') == len(spec.metrics)
+
+
+def test_a_metric_carries_its_definition_and_the_specs_own_reason(toy):
+    """Both are already written -- one in the kind's registry, one in the spec -- and neither
+    is invented for the page."""
+    config, kind, spec, out = toy
+    m = spec.metrics[0]
+    got = bubble(kind, m)
+    assert kind.registry.description(m.name)[:40] in got
+    if m.why:
+        assert m.why[:40] in got
+    assert kind.registry.title(m.name) in got
+
+
+def test_a_kind_with_no_registry_still_renders_a_panel(toy):
+    """A page is not the place to discover that a kind declared nothing."""
+    config, kind, spec, out = toy
+
+    class Bare:
+        pass
+
+    got = bubble(Bare(), spec.metrics[0])
+    assert spec.metrics[0].name in got            # falls back to the metric's own name
+    data = collect(spec, kind, out)
+    assert metric_rows(spec, Bare(), data.with_metrics(), data.order)
+
+
+def test_a_diverged_value_is_counted_rather_than_averaged_in(toy):
+    """Averaging it in gave 9.2e19, which is not the metric's central value in any sense a
+    reader could use."""
+    config, kind, spec, out = toy
+    name = spec.metrics[0].name
+    _cell(out, "ols", 0, results={**_done(**{name: 0.5})})
+    _cell(out, "ols", 1, results={**_done(**{name: float("inf")})})
+    data = collect(spec, kind, out)
+    rows = metric_rows(spec, kind, data.with_metrics(), data.order)
+    assert "1 diverged" in rows
+    assert "9.2e" not in rows and "inf" not in rows.replace("infinity", "")
+
+
+def test_the_arm_table_crowns_a_best_only_when_there_is_something_to_compare(toy):
+    """Early in a run one arm has finished units and every column crowned it. Best-of-one is
+    not a comparison, and it reads like a result."""
+    config, kind, spec, out = toy
+    bars = [m for m in spec.metrics if m.bar is not None]
+    assert len(bars) > 1, "this needs more than one judged column to be worth running"
+    _cell(out, "ols", 0, results=_done(slope_error=0.01, r2=0.99))
+    data, agg = _agg_of(spec, kind, out)
+    assert "crown" not in arm_table(spec, kind, agg, data.order)
+
+    _cell(out, "noisy", 0, results={**_done(slope_error=0.9, r2=0.10), "arm": "noisy"})
+    data, agg = _agg_of(spec, kind, out)
+    table = arm_table(spec, kind, agg, data.order)
+    assert table.count("crown") == len(bars), table
+    # ...and the crown went to the arm that actually won, in each direction.
+    ols = next(r for r in table.split("<tr>") if ">ols<" in r)
+    assert ols.count("crown") == len(bars), "the better arm did not take both columns"
+
+
+def test_an_arm_with_a_diverged_seed_never_wins_a_column(toy):
+    """Its mean is over the seeds that survived, which is not the quantity the others report."""
+    config, kind, spec, out = toy
+    name = spec.metrics[0].name
+    _cell(out, "ols", 0, results=_done(**{name: 0.001}))
+    _cell(out, "ols", 1, results=_done(**{name: float("inf")}))
+    _cell(out, "noisy", 0, results={**_done(**{name: 0.5}), "arm": "noisy"})
+    _cell(out, "noisy", 1, results={**_done(**{name: 0.6}), "arm": "noisy"})
+    data, agg = _agg_of(spec, kind, out)
+    table = arm_table(spec, kind, agg, data.order)
+    assert "diverged" in table
+    rows = table.split("<tr>")
+    ols = next(r for r in rows if ">ols<" in r)
+    assert "crown" not in ols, "an arm with a diverged seed was crowned"
+
+
+def test_the_reference_arm_of_a_comparison_is_not_marked_against_itself(toy):
+    """A cross printed against a number that was never on trial."""
+    from rl_researcher.artefacts.report import aggregate
+
+    config, kind, spec, out = toy
+    m = spec.metrics[0]
+    object.__setattr__(m, "bar", None) if False else None
+    m.compare_to = "noisy"
+    m.bar = 0.5
+    agg = aggregate([{"arm": a, "metrics": {m.name: 0.4}} for a in ("ols", "noisy")],
+                    [m.name for m in spec.metrics])
+    table = arm_table(spec, kind, agg, ["ols", "noisy"])
+    noisy = next(r for r in table.split("<tr>") if ">noisy<" in r)
+    assert "✗" not in noisy and "✓" not in noisy
+
+
+def test_a_failed_unit_gets_its_own_panel_and_leaves_in_progress(toy):
+    """One sat in the in-progress table reading 0.0 steps/s with the reason off past the
+    horizontal scroll."""
+    config, kind, spec, out = toy
+    _cell(out, "ols", 0, progress=_beat(status="failed", error="RuntimeError: CUDA out of memory"))
+    _cell(out, "ols", 1, progress=_beat())
+    data = collect(spec, kind, out)
+    fails = failed_panel(data)
+    assert "CUDA out of memory" in fails and "1 unit" in fails
+    running = running_table(spec, kind, data)
+    assert "CUDA out of memory" not in running
+    assert ">ols<" in running                                  # the live one is still there
+    assert failed_panel(collect(spec, kind, out.parent / "empty")) == ""
+
+
+def test_queued_units_get_their_own_box(toy):
+    config, kind, spec, out = toy
+    _cell(out, "ols", 0, results=_done())
+    data = collect(spec, kind, out)
+    panel = queued_panel(data)
+    assert "queued · 5" in panel and panel.count("qchip") == 5
+
+
+def test_finished_units_are_ordered_best_first(toy):
+    config, kind, spec, out = toy
+    m = spec.metrics[0]
+    _cell(out, "ols", 0, results=_done(**{m.name: 0.9}))
+    _cell(out, "ols", 1, results=_done(**{m.name: 0.01}))
+    data = collect(spec, kind, out)
+    table = finished_table(spec, kind, data)
+    assert "bestrow" in table
+    rows = [r for r in table.split("<tr") if 'class="cell"' in r]   # [1] is the header row
+    better = "0.01" if m.direction == "lower" else "0.9"
+    assert better in rows[0], rows[0][:400]
+
+
+def test_the_curve_columns_are_the_ones_the_kind_declares(toy):
+    """The study page had three metric names hardcoded here. Which series a page draws, and
+    which bar is a curve's floor, is the kind's to say."""
+    config, kind, spec, out = toy
+    declared = kind.curves(spec)
+    assert declared, "the toy kind declares no curves, so this test proves nothing"
+    _cell(out, "ols", 0, results=_done())
+    data = collect(spec, kind, out)
+    table = finished_table(spec, kind, data)
+    for c in declared:
+        assert c.title in table
+
+    floors = floors_of(spec, kind)
+    bars = {m.name: m.bar for m in spec.metrics}
+    for c in declared:
+        assert floors[c.key] == (bars.get(c.floor_metric) if c.floor_metric else None)
+
+
+def test_a_kind_whose_curves_raise_still_renders(toy):
+    config, kind, spec, out = toy
+    _cell(out, "ols", 0, results=_done())
+    data = collect(spec, kind, out)
+
+    class Angry:
+        registry = kind.registry
+
+        def curves(self, spec):
+            raise RuntimeError("nope")
+
+    assert curves_of(spec, Angry()) == []
+    assert finished_table(spec, Angry(), data)          # a table, just without curve columns
+
+
+def test_the_headline_reports_the_floor_alongside_the_win(toy):
+    """A unit over the primary bar but under a collapse floor is not a winner, and the header
+    must not read like one."""
+    config, kind, spec, out = toy
+    _cell(out, "ols", 0, results=_done())
+    data = collect(spec, kind, out)
+    head = headline(spec, kind, data)
+    assert "Current best" in head and "ols" in head
+    assert 'class="stat' in head
+
+
+def test_no_headline_before_anything_finishes(toy):
+    config, kind, spec, out = toy
+    _cell(out, "ols", 0, progress=_beat())
+    assert headline(spec, kind, collect(spec, kind, out)) == ""
+
+
+def test_a_diverged_unit_is_never_crowned_the_headline(toy):
+    """On a higher-is-better primary, max() would have made it the headline of the whole run."""
+    config, kind, spec, out = toy
+    m = spec.metrics[0]
+    _cell(out, "ols", 0, results=_done(**{m.name: float("inf")}))
+    assert headline(spec, kind, collect(spec, kind, out)) == ""
+    _cell(out, "ols", 1, results=_done(**{m.name: 0.02}))
+    assert "seed 1" in headline(spec, kind, collect(spec, kind, out))
+
+
+def test_a_resumable_or_failed_unit_says_so_in_its_notes(toy):
+    config, kind, spec, out = toy
+    _cell(out, "ols", 0, progress=_beat(step=500), checkpoint={"step": 500})
+    u = next(u for u in collect(spec, kind, out).units if u.arm == "ols" and u.seed == 0)
+    assert "resumable from 500" in notes(u)
+    assert "updated" in notes(u)
+
+
+def test_nothing_a_panel_writes_reaches_the_network(toy):
+    """A page that fetches is a page that does not open on a machine with no network, and this
+    one is meant to open from a file and from a share."""
+    config, kind, spec, out = toy
+    _cell(out, "ols", 0, results=_done())
+    _cell(out, "ols", 1, progress=_beat())
+    data = collect(spec, kind, out)
+    _d, agg = _agg_of(spec, kind, out)
+    whole = "".join([
+        headline(spec, kind, data),
+        metric_rows(spec, kind, data.with_metrics(), data.order),
+        arm_table(spec, kind, agg, data.order),
+        running_table(spec, kind, data),
+        finished_table(spec, kind, data),
+        failed_panel(data), queued_panel(data),
+        format_log(data.log_tail, vocab_of(kind), data.order),
+    ])
+    for bad in ("http://", "https://", "//fonts.", "<script src", "@import"):
+        assert bad not in whole, bad
