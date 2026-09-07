@@ -17,7 +17,6 @@ from __future__ import annotations
 import json
 import sys
 
-from rl_researcher.artefacts.run_report import write_report
 from rl_researcher.cli import console, load_all, spec_parser
 from rl_researcher.ledger import open_ledger
 
@@ -39,8 +38,22 @@ def main(argv=None) -> int:
 
     ledger = None if a.no_ledger else open_ledger(config)
     before = len(ledger.rows) if ledger is not None else 0
-    path = write_report(spec, summary, out, kind=kind, ledger=ledger,
-                        command=f"python -m rl_researcher.report {spec.name}")
+    # Which document this run gets is the kind's to say. A measurement is not a report: it has
+    # no arms, no bars and nothing that was predicted, and laying it out as one would present
+    # numbers that answer a question as though they had settled a registered comparison.
+    if getattr(kind, "artefact_kind", "report") == "measurement":
+        from rl_researcher.artefacts.measurement import write_measurement
+        from rl_researcher.measurement import MeasurementKind
+
+        payload = (MeasurementKind.payload_of(kind, summary)
+                   if isinstance(kind, MeasurementKind) else summary)
+        path = write_measurement(spec, payload, out, kind=kind, ledger=ledger,
+                                 command=f"python -m rl_researcher.report {spec.name}")
+    else:
+        from rl_researcher.artefacts.run_report import write_report
+
+        path = write_report(spec, summary, out, kind=kind, ledger=ledger,
+                            command=f"python -m rl_researcher.report {spec.name}")
 
     print(f"report -> {path}")
     print(f"page   -> {path.with_name('report.html')}")
