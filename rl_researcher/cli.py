@@ -25,3 +25,21 @@ def load_all(spec_arg: str, out_arg: Optional[str] = None) -> Tuple[Config, RunK
     spec = kind.load(spec_path)
     out = Path(out_arg) if out_arg else out_dir_for(spec, config)
     return config, kind, spec, out
+
+
+def console() -> None:
+    """Make stdout able to carry the marks the reports are written in, and unbuffered.
+
+    A Windows console defaults to cp1252, which cannot encode the tick, the cross or the plus
+    or minus sign that every verdict in this project is written with, so printing one raised
+    UnicodeEncodeError and took the command down after its work was already done. Line
+    buffering is the other half of the same rule the runner follows: progress a human is
+    waiting on is never held in a buffer.
+    """
+    import sys
+
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)  # type: ignore[union-attr]
+        except (AttributeError, ValueError):  # pragma: no cover - a redirected or exotic stream
+            pass

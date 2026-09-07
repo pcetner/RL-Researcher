@@ -10,11 +10,12 @@ from __future__ import annotations
 
 import sys
 
-from rl_researcher.cli import load_all, spec_parser
+from rl_researcher.cli import console, load_all, spec_parser
 from rl_researcher.gate import decide, write_approval
 
 
 def main(argv=None) -> int:
+    console()
     p = spec_parser(__doc__.split("\n\n")[0])
     p.add_argument("--quote", required=True, help="the sentence in which the human approved this run")
     p.add_argument("--session", default="", help="the session or conversation the yes was given in")

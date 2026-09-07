@@ -118,8 +118,10 @@ def print_status(st: RunStatus, log=print) -> int:
 
 
 def main(argv=None) -> int:
-    from rl_researcher.config import load_config, kind_for, out_dir_for
+    from rl_researcher.cli import console
+    from rl_researcher.config import kind_for, load_config, out_dir_for
 
+    console()
     p = argparse.ArgumentParser(description="where a run stands; exit 2 on a stale or failed unit")
     p.add_argument("spec")
     p.add_argument("--out", default=None)

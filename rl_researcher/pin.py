@@ -10,7 +10,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-from rl_researcher.cli import load_all, spec_parser
+from rl_researcher.cli import console, load_all, spec_parser
 
 
 def _staged_checks(stage, spec, kind, config, out) -> list:
@@ -25,6 +25,7 @@ def _staged_checks(stage, spec, kind, config, out) -> list:
 
 
 def main(argv=None) -> int:
+    console()
     a = spec_parser(__doc__.split("\n\n")[0]).parse_args(argv)
     config, kind, spec, out = load_all(a.spec, a.out)
     digest = kind.pin(spec, Path(spec.source_path or a.spec))

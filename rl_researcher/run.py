@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import sys
 
-from rl_researcher.cli import load_all, spec_parser
+from rl_researcher.cli import console, load_all, spec_parser
 from rl_researcher.estimate import add_budget_args
 from rl_researcher.gate import GateRefused, enforce
 from rl_researcher.lock import RunLocked
@@ -21,6 +21,7 @@ from rl_researcher.stop import HotStop
 
 
 def main(argv=None) -> int:
+    console()
     p = spec_parser(__doc__.split("\n\n")[0])
     add_budget_args(p)
     p.add_argument("--no-resume", action="store_true", help="start every unit over")

@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import sys
 
-from rl_researcher.cli import load_all, spec_parser
+from rl_researcher.cli import console, load_all, spec_parser
 from rl_researcher.gate import decide
 
 
@@ -21,6 +21,7 @@ def add_budget_args(p) -> None:
 
 
 def main(argv=None) -> int:
+    console()
     p = spec_parser(__doc__.split("\n\n")[0])
     add_budget_args(p)
     a = p.parse_args(argv)

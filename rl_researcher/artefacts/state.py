@@ -1,0 +1,421 @@
+"""The state page: one file that says what needs a human, worst news first.
+
+Every other artefact is about one run. This one is about the project, and it is the page a
+session opens before it does anything else. It answers, in this order: what is waiting on you,
+what is running right now, what is queued, what was decided lately, and whether the machinery
+itself is healthy.
+
+It is entirely generated. Nothing is typed into it, because an input that lives only in a page
+is an input that gets stale; the human's inputs are files instead (a ticked decision box, an
+edited queue, an approval, a killed process), and the next `state` reads them.
+
+Order is the design. A run that finished at three in the morning and has been sitting unread
+is the most expensive thing in the project, so it goes at the top; the health section, which is
+usually boring, goes at the bottom.
+"""
+
+from __future__ import annotations
+
+import json
+import re
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+from rl_researcher import atomic
+from rl_researcher.config import Config
+from rl_researcher.ledger import Ledger, open_ledger
+from rl_researcher.regions import find
+from rl_researcher.render import md_to_html
+from rl_researcher.spec import load_toml
+from rl_researcher.status import RunStatus, run_status
+from rl_researcher.units import stamp_now
+
+STATE_MD = "STATE.md"
+STATE_HTML = "state.html"
+STATE_JSON = "state.json"
+
+
+def _fmt_duration(seconds: Optional[float]) -> str:
+    if seconds is None:
+        return "?"
+    seconds = float(seconds)
+    if seconds < 90:
+        return f"{seconds:.0f}s"
+    if seconds < 5400:
+        return f"{seconds / 60:.0f} min"
+    return f"{seconds / 3600:.1f} h"
+
+
+@dataclass
+class Waiting:
+    """A run whose result is on disk and whose decision box is still empty."""
+
+    run: str
+    kind: str
+    artefact: str
+    outcome: str = ""
+    headline: List[str] = field(default_factory=list)
+    options: List[str] = field(default_factory=list)
+    finished: str = ""
+
+
+@dataclass
+class StateView:
+    project: str
+    generated: str
+    waiting: List[Waiting] = field(default_factory=list)
+    running: List[Dict[str, Any]] = field(default_factory=list)
+    queued: List[Dict[str, Any]] = field(default_factory=list)
+    decided: List[Dict[str, Any]] = field(default_factory=list)
+    health: Dict[str, Any] = field(default_factory=dict)
+
+    def to_json(self) -> Dict[str, Any]:
+        return {
+            "project": self.project, "generated": self.generated,
+            "waiting": [w.__dict__ for w in self.waiting],
+            "running": self.running, "queued": self.queued,
+            "decided": self.decided, "health": self.health,
+        }
+
+
+# --------------------------------------------------------------------------- gathering
+
+
+def specs_in(config: Config) -> List[Path]:
+    d = config.path("specs")
+    return sorted(p for p in d.glob("*.toml") if p.is_file()) if d.is_dir() else []
+
+
+def _decision_region(artefact: Path) -> Optional[str]:
+    """The body of the report's decision stub, or ``None`` if it has none.
+
+    Preferred form is an authored region. Reports written before regions existed carry a plain
+    ``## Decision`` section instead, and those are read too: a study that was decided months ago
+    must not reappear in "Awaiting you" because the file it was decided in has an older shape.
+    """
+    if not artefact.is_file():
+        return None
+    try:
+        text = artefact.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    try:
+        for r in find(text):
+            if r.kind == "authored" and r.arg.startswith("decision"):
+                return r.body
+    except ValueError:
+        pass
+    return section(text, "Decision")
+
+
+#: An H2 whose title starts with ``name``, and everything under it up to the next H2.
+_SECTION = r"(?ms)^##[ \t]+{name}[^\r\n]*[\r\n]+(?P<body>.*?)(?=^##[ \t]|\Z)"
+
+
+def section(text: str, name: str) -> Optional[str]:
+    m = re.search(_SECTION.format(name=re.escape(name)), text)
+    return m.group("body") if m else None
+
+
+def ticked(body: Optional[str]) -> List[str]:
+    """The options ticked in a decision stub, as ``- [x] iterate`` lines."""
+    if not body:
+        return []
+    out = []
+    for line in body.splitlines():
+        s = line.strip()
+        if s.lower().startswith(("- [x]", "* [x]")):
+            out.append(s[5:].strip())
+    return out
+
+
+def options(body: Optional[str]) -> List[str]:
+    if not body:
+        return []
+    out = []
+    for line in body.splitlines():
+        s = line.strip()
+        if s.lower().startswith(("- [ ]", "- [x]", "* [ ]", "* [x]")):
+            out.append(s[5:].strip())
+    return out
+
+
+def _outcome_line(spec: Any, summary: Dict[str, Any]) -> str:
+    """The registered outcome as the spec's own conjunction, per arm."""
+    from rl_researcher.artefacts.report import aggregate, passes
+
+    names = [m.name for m in spec.metrics]
+    agg = aggregate(summary.get("runs") or [], names)
+    wanted = list(spec.conjunction) or [m.name for m in spec.metrics if m.bar is not None or m.compare_to]
+    if not wanted:
+        return "no bars registered; this run reports rather than decides"
+    cleared: List[str] = []
+    missed: List[str] = []
+    for arm, per in agg.items():
+        bad = []
+        for name in wanted:
+            m = spec.metric(name)
+            if m is None:
+                continue
+            mean, _spread, _n, diverged = per.get(name, (float("nan"), float("nan"), 0, 0))
+            bar = m.bar
+            if m.compare_to:
+                ref = agg.get(m.compare_to, {}).get(name)
+                bar = None if ref is None else ref[0]
+            if passes(m.direction, mean, bar, diverged=diverged) is not True:
+                bad.append(name)
+        (missed if bad else cleared).append(arm if not bad else f"{arm} (missed {', '.join(bad)})")
+    parts = []
+    if cleared:
+        parts.append("cleared every bar: " + ", ".join(sorted(cleared)))
+    if missed:
+        parts.append("missed: " + "; ".join(sorted(missed)))
+    return " · ".join(parts)
+
+
+def _headline(spec: Any, summary: Dict[str, Any], limit: int = 4) -> List[str]:
+    from rl_researcher.artefacts.report import aggregate, bar_mark, fmt
+
+    names = [m.name for m in spec.metrics if m.bar is not None or m.compare_to][:limit]
+    if not names:
+        names = [m.name for m in spec.metrics][:limit]
+    agg = aggregate(summary.get("runs") or [], names)
+    arms = list(agg)
+    if not arms:
+        return []
+    rows = ["| metric | " + " | ".join(arms) + " |",
+            "|---" * (len(arms) + 1) + "|"]
+    for name in names:
+        m = spec.metric(name)
+        cells = []
+        for arm in arms:
+            mean, spread, n, diverged = agg[arm].get(name, (float("nan"), float("nan"), 0, 0))
+            ref = None
+            if m is not None and m.compare_to:
+                r = agg.get(m.compare_to, {}).get(name)
+                ref = None if r is None else r[0]
+            mark = bar_mark(m, mean, diverged, reference=ref) if m is not None else ""
+            cells.append(fmt(mean, spread, n, diverged) + mark)
+        rows.append(f"| {name} | " + " | ".join(cells) + " |")
+    return rows
+
+
+def build_state(config: Config, *, ledger: Optional[Ledger] = None) -> StateView:
+    """Read every spec, every run's status and every decision stub, and assemble the view."""
+    from rl_researcher.kinds import load_kind
+
+    ledger = ledger or open_ledger(config)
+    view = StateView(project=config.name, generated=stamp_now())
+
+    for spec_path in specs_in(config):
+        try:
+            kind_name = _kind_name(spec_path)
+            kind = load_kind(config.kind_entry(kind_name))
+            spec = kind.load(spec_path)
+        except Exception as exc:  # noqa: BLE001 - one broken spec must not blank the page
+            view.health.setdefault("unreadable_specs", []).append(f"{spec_path.name}: {exc}")
+            continue
+        out = config.out_root(kind_name) / spec.name
+        st = run_status(spec, kind, out)
+        summary_path = out / "results.json"
+        artefact = out / "README.md"
+        if st.finished and summary_path.is_file():
+            body = _decision_region(artefact)
+            if not ticked(body):
+                summary = json.loads(summary_path.read_text(encoding="utf-8"))
+                view.waiting.append(Waiting(
+                    run=spec.name, kind=kind_name,
+                    artefact=_rel(config, artefact),
+                    outcome=_outcome_line(spec, summary),
+                    headline=_headline(spec, summary),
+                    options=options(body),
+                    finished=_finished_at(st),
+                ))
+            else:
+                view.decided.append({"run": spec.name, "chose": ticked(body),
+                                     "artefact": _rel(config, artefact)})
+        elif st.state != "not started":
+            view.running.append(_running_row(config, spec, st, out))
+
+    view.queued = _queue(config)
+    view.decided = _recent_decisions(ledger, view.decided)
+    view.health.update(_health(config, ledger))
+    return view
+
+
+def _kind_name(spec_path: Path) -> str:
+    from rl_researcher.spec import kind_of
+
+    return kind_of(spec_path)
+
+
+def _rel(config: Config, p: Path) -> str:
+    try:
+        return p.relative_to(config.root).as_posix()
+    except ValueError:
+        return p.as_posix()
+
+
+def _finished_at(st: RunStatus) -> str:
+    stamps = [u.progress.get("updated") for u in st.units if u.progress.get("updated")]
+    return max((str(s) for s in stamps), default="")
+
+
+def _running_row(config: Config, spec: Any, st: RunStatus, out: Path) -> Dict[str, Any]:
+    live = [u for u in st.units if u.live]
+    ages = [u.age for u in live if u.age is not None]
+    etas = [u.eta_seconds for u in live if u.eta_seconds is not None]
+    return {
+        "run": spec.name,
+        "done": st.done, "total": len(st.units),
+        "heartbeat_age": _fmt_duration(min(ages) if ages else None),
+        "eta": _fmt_duration(max(etas) if etas else None),
+        "stale": [u.unit for u in st.units if u.stale],
+        "failed": [u.unit for u in st.units if u.failed],
+        "resumable": [u.unit for u in st.units if u.resumable and not u.done],
+        "dashboard": _rel(config, out / "dashboard.html"),
+    }
+
+
+def _queue(config: Config) -> List[Dict[str, Any]]:
+    p = config.path("queue")
+    if not p.is_file():
+        return []
+    try:
+        data = load_toml(p)
+    except Exception as exc:  # noqa: BLE001
+        return [{"run": f"(queue unreadable: {exc})", "hold": True}]
+    return [dict(e) for e in data.get("entry", [])]
+
+
+def _recent_decisions(ledger: Ledger, from_stubs: List[Dict[str, Any]], limit: int = 5) -> List[Dict[str, Any]]:
+    rows: List[Dict[str, Any]] = [
+        {"run": r.run, "chose": [r.note] if r.note else [], "date": r.date, "id": r.id}
+        for r in ledger.query(kind="decision")]
+    rows.sort(key=lambda r: str(r["date"]), reverse=True)
+    seen = {r["run"] for r in rows}
+    rows += [d for d in from_stubs if d["run"] not in seen]
+    return rows[:limit]
+
+
+def _health(config: Config, ledger: Ledger) -> Dict[str, Any]:
+    from rl_researcher.cost import read_throughput
+
+    canary = {}
+    canary_path = config.path("ledger") / "canary.json"
+    if canary_path.is_file():
+        try:
+            canary = json.loads(canary_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            canary = {}
+    watcher = {}
+    tick = config.path("logs") / "watcher.json"
+    if tick.is_file():
+        try:
+            watcher = json.loads(tick.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            watcher = {}
+    rows = read_throughput(config)
+    devices = sorted({str(r.get("device_name") or r.get("device")) for r in rows if r.get("device")})
+    return {
+        "findings": len(ledger.rows),
+        "throughput_rows": len(rows),
+        "throughput_devices": devices,
+        "canary": canary,
+        "watcher_last_tick": watcher.get("tick", ""),
+        "approvals": sorted(p.name for p in config.path("approvals").glob("*.toml"))
+        if config.path("approvals").is_dir() else [],
+    }
+
+
+# --------------------------------------------------------------------------- rendering
+
+
+def render_state(view: StateView) -> str:
+    L: List[str] = [
+        f"<!-- rl: kind=state project={view.project} generated={view.generated} -->",
+        f"# {view.project}: state",
+        "",
+        "_Generated by `python -m rl_researcher.state`. Nothing here is typed by hand; to change"
+        " it, tick a decision box, edit the queue, write an approval, or start a run._",
+        "",
+        "## Awaiting you",
+        "",
+    ]
+    if not view.waiting:
+        L += ["Nothing is waiting on a decision.", ""]
+    for w in view.waiting:
+        L += [f"### {w.run}", "",
+              f"**Registered outcome.** {w.outcome}", ""]
+        if w.headline:
+            L += w.headline + [""]
+        if w.options:
+            L += ["**Options on the stub.** " + " · ".join(w.options), ""]
+        L += [f"Finished {w.finished or 'at an unrecorded time'}. Read [{w.artefact}]({_link(w.artefact)}); "
+              f"tick a box in its decision region, then run `python -m rl_researcher.decide {w.run}`.", ""]
+
+    L += ["## Running", ""]
+    if not view.running:
+        L += ["Nothing is running.", ""]
+    else:
+        L += ["| run | units | heartbeat | eta | trouble |", "|---|---|---|---|---|"]
+        for r in view.running:
+            trouble = ", ".join(["stale: " + ", ".join(r["stale"])] if r["stale"] else []
+                                + (["FAILED: " + ", ".join(r["failed"])] if r["failed"] else [])) or "-"
+            L.append(f"| {r['run']} | {r['done']}/{r['total']} | {r['heartbeat_age']} ago | "
+                     f"{r['eta']} | {trouble} |")
+        L.append("")
+
+    L += ["## Queued", ""]
+    if not view.queued:
+        L += ["The queue is empty.", ""]
+    else:
+        L += ["| run | estimate | gate | approval | hold |", "|---|---|---|---|---|"]
+        for q in view.queued:
+            L.append(f"| {q.get('run', '?')} | {q.get('estimate', '-')} | {q.get('gate', '-')} | "
+                     f"{q.get('approval', '-')} | {'yes' if q.get('hold') else ''} |")
+        L.append("")
+
+    L += ["## Recently decided", ""]
+    if not view.decided:
+        L += ["No decisions recorded yet.", ""]
+    else:
+        for d in view.decided:
+            chose = ", ".join(d.get("chose") or []) or "(no choice recorded)"
+            L.append(f"- **{d['run']}** — {chose}" + (f" [{d['id']}]" if d.get("id") else ""))
+        L.append("")
+
+    h = view.health
+    L += ["## Health", "",
+          f"- {h.get('findings', 0)} findings on file; {h.get('throughput_rows', 0)} throughput rows "
+          f"across {', '.join(h.get('throughput_devices') or ['no devices'])}.",
+          f"- Watcher last tick: {h.get('watcher_last_tick') or 'never (not installed)'}.",
+          f"- Canary: {h.get('canary', {}).get('commit', 'never run')}"
+          + (f" ({h['canary'].get('date', '')})" if h.get("canary") else ""),
+          f"- Approvals on file: {', '.join(h.get('approvals') or ['none'])}."]
+    for bad in h.get("unreadable_specs", []):
+        L.append(f"- **A spec cannot be read**: {bad}")
+    L.append("")
+    return "\n".join(L)
+
+
+def _link(rel: str) -> str:
+    return "../" + rel if not rel.startswith("docs/") else rel[len("docs/"):]
+
+
+def write_state(config: Config, *, ledger: Optional[Ledger] = None) -> Path:
+    """Write ``STATE.md``, ``state.json`` and ``state.html``; return the markdown path."""
+    view = build_state(config, ledger=ledger)
+    root = config.path("state")
+    root.mkdir(parents=True, exist_ok=True)
+    md = render_state(view)
+    md_path = root / STATE_MD
+    atomic.write_text(md_path, md)
+    atomic.write_text(root / STATE_JSON, json.dumps(view.to_json(), indent=2, default=str))
+    from rl_researcher.render import strip_regions
+
+    atomic.write_text(root / STATE_HTML,
+                      md_to_html(strip_regions(md), kind="state", title=f"{view.project}: state",
+                                 subtitle=f"generated {view.generated}", embed_images_from=root))
+    return md_path
