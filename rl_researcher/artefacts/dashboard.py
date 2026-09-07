@@ -35,6 +35,11 @@ from rl_researcher.units import UnitState, read_json
 
 REFRESH_SECONDS = 15
 
+#: States in which a run is over. A page rendered in one of them does not reload itself: a
+#: finished page that keeps refreshing looks alive, which is the one thing a status page must
+#: never be wrong about.
+FINAL_STATES = ("finished", "FAILED", "stopped", "hot-stopped")
+
 #: Read when a kind declares no vocabulary of its own. Every token here is a word the framework's
 #: own runner writes, not a project's.
 DEFAULT_VOCAB = LogVocab(
@@ -124,7 +129,10 @@ def collect(spec: RunSpec, kind: RunKind, out: Path) -> DashboardData:
         status=st,
         order=list(dict.fromkeys(u.arm for u in st.units)),
         total_steps=total, done_steps=done,
-        eta_all=(per_step * (total - done)) if per_step and total > done else None,
+        # 0, not None, once every unit is done: `—` reads as "not known" where the
+        # honest answer is "none". None stays for a run too early to project.
+        eta_all=((per_step * (total - done)) if per_step and total > done
+                 else (0.0 if total and done >= total else None)),
         elapsed_all=elapsed,
         heartbeat=min(ages) if ages else None,
         device=device,
@@ -425,7 +433,8 @@ def arm_table(spec: RunSpec, kind: RunKind, agg: Dict[str, Any], order: Sequence
         rows.append(f'<tr><td class="cell">{charts.glyph(name, list(order))}{html.escape(name)}'
                     f'<span class="seed">{seeds} seed{"" if seeds == 1 else "s"}</span></td>'
                     f'{"".join(cells)}</tr>')
-    return f'<table class="vtable"><tr><th>arm</th>{heads}</tr>{"".join(rows)}</table>'
+    noun = html.escape(getattr(kind, "arm_noun", "arm"))
+    return f'<table class="vtable"><tr><th>{noun}</th>{heads}</tr>{"".join(rows)}</table>'
 
 
 def identity(unit: UnitState, order: Sequence[str], *, best: bool = False) -> str:
@@ -661,7 +670,8 @@ def ladder(spec: RunSpec, kind: RunKind, data: DashboardData) -> str:
             f'repeat({len(seeds)},minmax(124px,1fr));'
             f'min-width:{112 + 128 * len(seeds)}px')
     head = "".join(f'<div class="lhead">seed {s}</div>' for s in seeds)
-    rows = [f'<div class="lrow" style="{cols}"><div class="lhead">arm</div>{head}</div>']
+    noun = html.escape(getattr(kind, "arm_noun", "arm"))
+    rows = [f'<div class="lrow" style="{cols}"><div class="lhead">{noun}</div>{head}</div>']
     for arm in data.order:
         cells = []
         for seed in seeds:
@@ -675,7 +685,7 @@ def ladder(spec: RunSpec, kind: RunKind, data: DashboardData) -> str:
         rows.append(f'<div class="lrow" style="{cols}"><div class="larm">'
                     f'{charts.glyph(arm, list(data.order))}{html.escape(arm)}</div>'
                     f'{"".join(cells)}</div>')
-    return (f'<div class="panel"><h2>ladder · {len(data.order)} arms × {len(seeds)} seeds</h2>'
+    return (f'<div class="panel"><h2>ladder · {len(data.order)} {noun}s × {len(seeds)} seeds</h2>'
             f'<div class="ladder scroll">{"".join(rows)}</div></div>')
 
 def headline(spec: RunSpec, kind: RunKind, data: DashboardData) -> str:
@@ -762,7 +772,8 @@ def _section_arms(spec: RunSpec, kind: RunKind, data: DashboardData) -> str:
         return ""
     agg = aggregate([u.result or {} for u in finished], [m.name for m in spec.metrics])
     table = arm_table(spec, kind, agg, data.order)
-    return (f'<div class="panel scroll"><h2>by arm · mean and spread across seeds</h2>'
+    noun = getattr(kind, "arm_noun", "arm")
+    return (f'<div class="panel scroll"><h2>by {noun} · mean and spread across seeds</h2>'
             f'{table}</div>') if table else ""
 
 
@@ -862,8 +873,14 @@ def shell(title: str, body: str, *, refresh: bool = True, extra_css: str = "",
 
 
 def render(spec: RunSpec, kind: RunKind, data: DashboardData, *, refresh: bool = True) -> str:
-    """The live page for one run."""
+    """The live page for one run.
+
+    ``refresh`` asks for a self-reloading page; it is granted only while the run is still
+    going. The alternative is a caller that has to remember to turn it off at the end, and the
+    page it forgets on is a finished run that looks alive forever.
+    """
     e = html.escape
+    refresh = refresh and data.status.state not in FINAL_STATES
     pct = 100.0 * data.done_steps / max(data.total_steps, 1)
     beat = (f' · updated {duration(data.heartbeat)} ago'
             if data.heartbeat is not None else "")

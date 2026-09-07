@@ -606,11 +606,34 @@ def test_the_foot_says_what_the_kind_wants_it_to_and_points_at_status(toy):
 
 
 def test_a_page_rendered_after_the_run_does_not_reload_itself(toy):
-    """A finished page that keeps reloading is a page that looks alive."""
+    """A finished page that keeps reloading looks alive, which is the one thing a status page
+    must never be wrong about — so the run's own state gets the last word, not the caller.
+    Otherwise every caller has to remember to turn refresh off at the end, and the one that
+    forgets leaves a finished run refreshing forever."""
     config, kind, spec, out = toy
-    data = collect(spec, kind, out)
-    assert "http-equiv=\"refresh\"" in render(spec, kind, data, refresh=True)
-    assert "http-equiv=\"refresh\"" not in render(spec, kind, data, refresh=False)
+    _cell(out, "ols", 0, progress=_beat())
+    live = collect(spec, kind, out)
+    assert live.status.state == "running"
+    assert "http-equiv=\"refresh\"" in render(spec, kind, live, refresh=True)
+    assert "http-equiv=\"refresh\"" not in render(spec, kind, live, refresh=False)
+
+    for u in kind.units(spec):
+        _cell(out, *u.split("/seed"), results=_done())
+    (out / "results.json").write_text("{}", encoding="utf-8")
+    done = collect(spec, kind, out)
+    assert done.status.state == "finished"
+    assert "http-equiv=\"refresh\"" not in render(spec, kind, done, refresh=True)
+    assert "rendered once, the run has ended" in render(spec, kind, done, refresh=True)
+
+
+def test_a_finished_run_has_nothing_left_rather_than_an_unknown_amount(toy):
+    """`—` reads as "not known", where the honest answer is "none"."""
+    config, kind, spec, out = toy
+    assert collect(spec, kind, out).eta_all is None          # too early to project
+    for u in kind.units(spec):
+        _cell(out, *u.split("/seed"), results=_done())
+    assert collect(spec, kind, out).eta_all == 0.0
+    assert "0s</b><span>projected left" in page_tiles(spec, kind, collect(spec, kind, out))
 
 
 def test_the_whole_page_fetches_nothing(toy):
@@ -721,3 +744,27 @@ def test_the_ladder_uses_the_kinds_own_word_for_a_step(toy):
 
     data = collect(spec, kind, out)
     assert "200 decisions" in ladder(spec, Decisions(kind), data)
+
+
+def test_every_arms_value_reaches_the_arm_table_including_the_unmarked_ones(toy):
+    """The table's whole job is the numbers, so none of them may be dropped.
+
+    Two faults this pins, both found by measuring a rendered page. The values were laid into a
+    one-value-wide column, because a per-metric row has one value where a per-arm row has one
+    per *arm*, so every chip past the first was clipped. And only marked arms were drawn,
+    which hid the compare-to reference — the number every other arm on that row is judged
+    against.
+    """
+    from rl_researcher.artefacts.report import aggregate
+
+    config, kind, spec, out = toy
+    m = spec.metrics[0]
+    m.compare_to, m.bar = "noisy", None
+    names = [x.name for x in spec.metrics]
+    agg = aggregate([{"arm": a, "status": "complete",
+                      "metrics": dict.fromkeys(names, v) | {m.name: v}}
+                     for a, v in (("ols", 0.14), ("noisy", 0.90))], names)
+    table = arm_table(spec, kind, agg, ["ols", "noisy"])
+    for text in ("0.14", "0.9"):
+        assert text in table, f"{text} never reaches the table"
+    assert ">ols<" in table and ">noisy<" in table    # the reference arm has a row of its own
