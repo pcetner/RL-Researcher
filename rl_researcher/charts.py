@@ -420,3 +420,54 @@ def multi_curve(series: Sequence[Tuple[str, Sequence[Tuple[float, float]], str]]
             f'<span class="yax"><i class="hi">{fmt(y_hi)}</i><i class="lo">{fmt(y_lo)}</i></span>'
             f'<span class="xax"><i>{fmt(x_lo)}</i><i class="xname">{html.escape(xname)}</i>'
             f'<i>{fmt(x_hi)}</i></span></span>')
+
+
+#: The stylesheet for what this module draws.
+#:
+#: It lived in the dashboard's one big sheet, which is why a block that called `track` or
+#: `glyph` emitted classes nothing had declared. A drawing and the rules that make it legible
+#: are one thing; a block that draws includes this, and a page that uses no such block does not
+#: carry it.
+CHART_CSS = """
+  .glyph { vertical-align:-2px; margin-right:6px }
+  /* one metric's axis: stretched SVG behind, markers positioned as HTML on top */
+  .tr { position:relative; height:36px }
+  .trbg { position:absolute; inset:0; width:100%; height:100% }
+  /* the scale: without it a marker's position means nothing */
+  .tr .end { position:absolute; bottom:-1px; font-size:9px; color:var(--muted); opacity:0.85;
+    font-variant-numeric:tabular-nums; pointer-events:none }
+  .tr .end.lo { left:0 }
+  .tr .end.hi { right:0 }
+  .mk { position:absolute; top:50%; transform:translate(-50%,-50%); line-height:0;
+    pointer-events:auto }
+  .axis { stroke:var(--line); stroke-width:1 }
+  .bar { stroke:var(--crit); stroke-width:1.4; stroke-dasharray:3 3; fill:none }
+  .pass { fill:var(--ok); fill-opacity:0.09 }
+  /* Dashed, because an outlined seed-2 marker is hollow too. Grey and broken is what
+     keeps "there is no number here" apart from "this is the third seed". */
+  .nanpt { fill:none; stroke:var(--muted); stroke-width:1.2; stroke-dasharray:2 1.6 }
+  /* Solid and in the critical colour: a diverged rollout is a result, not a missing one. */
+  .divpt { fill:none; stroke:var(--crit); stroke-width:1.6; stroke-linecap:round }
+  /* curve() draws these; with no stroke they were present and invisible. */
+  .spark .cax { stroke:currentColor; stroke-width:1; fill:none; opacity:0.28 }
+  .spark .floor { stroke:var(--crit); stroke-width:1; stroke-dasharray:2 2; opacity:0.55 }
+  .spark .floorlbl { font-size:7.5px; fill:var(--crit); opacity:0.85 }
+  /* a curve names both of its axes: y at the ends, x underneath. One colour for the whole
+     plot, so the numbers read as part of the graph rather than as loose digits beside it. */
+  .curvebox { position:relative; display:inline-block; color:var(--muted);
+    padding:4px 0 12px 32px }
+  .curvebox i { font-style:normal; font-size:8.5px; line-height:1;
+    font-variant-numeric:tabular-nums }
+  .curvebox .yax { position:absolute; left:0; top:4px; bottom:12px; width:28px }
+  .curvebox .yax i { position:absolute; right:0; white-space:nowrap }
+  .curvebox .yax .hi { top:0; transform:translateY(-50%) }
+  .curvebox .yax .lo { bottom:0; transform:translateY(50%) }
+  .curvebox .xax { position:absolute; left:32px; right:0; bottom:0;
+    display:flex; justify-content:space-between; align-items:baseline }
+  .curvebox .xax .xname { letter-spacing:0.04em; opacity:0.8 }
+  .legend { display:flex; flex-wrap:wrap; gap:6px 16px; padding:10px 14px 2px }
+  .legend .barkey { color:var(--muted) }
+  .legend .key { display:inline-flex; align-items:center; gap:6px; font-size:11.5px }
+  .legend .key i { font-style:normal; color:var(--muted); font-variant-numeric:tabular-nums }
+  .legend .seedkey svg { margin-right:-3px }
+"""
