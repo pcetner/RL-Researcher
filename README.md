@@ -155,7 +155,8 @@ such as a mounted Drive.
 ## Checks
 
 Thirteen questions, each asked at the stage where the answer can still change a plan, each
-named on the lesson it exists because of. `lint --list` prints them; `docs/lessons.md` says what
+named on the lesson it exists because of. `lint --list` prints them;
+[`rl_researcher/lessons.md`](rl_researcher/lessons.md), which ships inside the package, says what
 each cost. `run` refuses at exit 4 on an error finding before its first unit; `check` reports
 one and exits 1; the pre-commit hook refuses a commit that stages a path under a run whose lock
 is alive.

@@ -2,12 +2,13 @@
 
     python -m rl_researcher.install_skills [--dest ~/.claude/skills] [--dry-run]
 
-Each directory under ``skills/`` holding a ``SKILL.md`` is copied whole, overwriting what is
-there, so re-running after an upgrade updates them. Prints one line per file that changed.
-Skills live in the user folder rather than a project's ``.claude/skills`` so every repository
-that imports the package gets them.
+Each directory under the package's ``skills/`` holding a ``SKILL.md`` is copied whole,
+overwriting what is there, so re-running after an upgrade updates them. Prints one line per
+file that changed. Skills live in the user folder rather than a project's ``.claude/skills`` so
+every repository that imports the package gets them.
 
-No skills are written yet, so this currently finds none and says so.
+Four are shipped: ``rl-researcher``, ``rl-design``, ``rl-operate`` and ``rl-interpret``. They
+share one byte-identical invariants block, which C10 checks.
 """
 
 from __future__ import annotations
@@ -19,7 +20,7 @@ import sys
 from pathlib import Path
 from typing import List
 
-SKILLS_DIR = Path(__file__).resolve().parent.parent / "skills"
+SKILLS_DIR = Path(__file__).resolve().parent / "skills"
 
 
 def default_dest() -> Path:

@@ -62,10 +62,10 @@ Ctrl-C once is a hot stop: it checkpoints and exits 0, and the identical command
 decision are authored regions and survive every regeneration. Say what the run found, cite
 every number by its `[F####]`, and stop — the decision is the human's.
 
-A null is a result. `docs/lessons.md` L020 is what a null looked like the last time one was
+A null is a result. `rl_researcher/lessons.md` L020 is what a null looked like the last time one was
 worth more than the run that produced it.
 
 ## What makes a run worthless
 
-Read `docs/lessons.md`. It is twenty incidents, thirteen of which are now checks that ask
+Read `rl_researcher/lessons.md`, which ships inside the package. It is twenty incidents, thirteen of which are now checks that ask
 themselves. The other seven are the ones nothing can ask for you.
