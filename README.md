@@ -113,16 +113,11 @@ the next `state` reads them.
 
 The package is incomplete. These are not present:
 
-- the measurement and diagnosis writers. `rl_researcher.artefacts` has the report, the state
-  page, the live dashboard, the index and the shared statistics;
-- the check registry (`rl_researcher.checks`), the lint command, and the git hooks. `check`,
-  `pin` and `run` already look for the registry and find nothing, so only a kind's own
-  `check` method produces findings today;
-- the Claude Code skills. No skills are written yet, so `install_skills` finds none and installs
-  nothing.
+- the diagnosis writer. `rl_researcher.artefacts` has the report, the measurement, the state
+  page, the live dashboard, the index and the shared statistics.
 
-One hook on the run-kind protocol — `blocks` — is read by nothing until the measurement writers
-land. A kind may implement it now; it will take effect when they do.
+One hook on the run-kind protocol — `blocks` — is read by nothing yet. A kind may implement it
+now; it will take effect when the diagnosis writer lands.
 
 ## Commands
 
@@ -143,6 +138,8 @@ reads them.
 | `ledger_cli` | read the ledger, or backfill it from finished runs | 0, 1 on a hand-written registered row |
 | `plan_sync` | rewrite a plan's evidence regions from the ledger | 0, 1 with `--check` when out of step |
 | `watcher` | act on what changed since the last tick, and say so | 0 |
+| `lint` | ask every check that needs no run in flight | 0, 1 on an error |
+| `install_hooks` | point `core.hooksPath` at the shipped pre-commit hook | 0 |
 
 `watcher` is the only one meant to run unattended. One tick reads every run's status, compares
 it against the tick before, and does what a person would: on a run that just finished, the
@@ -151,9 +148,21 @@ past its own projection, a line in `watcher.log` and a toast. It starts nothing 
 `[watcher] launch` is off by default, because starting queued work is a decision.
 `scripts/install_watcher.ps1` registers it as a logon task.
 
-Two utilities sit outside that flow: `install_skills` copies the Claude Code skills into
-`~/.claude/skills` (there are none yet), and `colab_mirror` mirrors a running output directory
-onto a durable path such as a mounted Drive.
+Two utilities sit outside that flow: `install_skills` copies the four Claude Code skills into
+`~/.claude/skills`, and `colab_mirror` mirrors a running output directory onto a durable path
+such as a mounted Drive.
+
+## Checks
+
+Thirteen questions, each asked at the stage where the answer can still change a plan, each
+named on the lesson it exists because of. `lint --list` prints them; `docs/lessons.md` says what
+each cost. `run` refuses at exit 4 on an error finding before its first unit; `check` reports
+one and exits 1; the pre-commit hook refuses a commit that stages a path under a run whose lock
+is alive.
+
+C11 keeps the two lists honest in both directions — a check naming a lesson that is not on file
+fails, and a lesson naming a check that is not registered fails — so neither can be tidied
+without the other noticing.
 
 Full argument lists are in [docs/reference.md](docs/reference.md#commands).
 

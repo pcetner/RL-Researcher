@@ -1,0 +1,32 @@
+#!/bin/sh
+# Refuse a commit that would capture a run mid-flight, and report anything else `lint` finds.
+#
+# The one thing this hard-refuses is C06: staging a path under a run directory whose lock is
+# alive. That is not a style rule -- a run's outputs committed while it runs are a half-written
+# state, and a `git add -A` that catches a lock file is worse, because the lock then looks alive
+# to every later checkout.
+#
+# Everything else `lint` finds is printed and does not block. A hook that refuses on a warning
+# is a hook people learn to pass --no-verify to, and then C06 stops working too.
+#
+# Installed by `python -m rl_researcher.install_hooks`, which sets core.hooksPath.
+
+set -e
+
+PY="${RL_PYTHON:-python}"
+
+if ! "$PY" -c "import rl_researcher" >/dev/null 2>&1; then
+    echo "pre-commit: rl_researcher is not importable with $PY; skipping the checks." >&2
+    echo "            set RL_PYTHON to the interpreter that has it." >&2
+    exit 0
+fi
+
+# --stage run is the one that asks C06, and it is asked here rather than at launch because the
+# hook is what is present at the moment the mistake is being made.
+if ! "$PY" -m rl_researcher.lint --stage run,lint 2>&1; then
+    echo >&2
+    echo "pre-commit: refused. Fix the error(s) above, or --no-verify if you are certain." >&2
+    exit 1
+fi
+
+exit 0

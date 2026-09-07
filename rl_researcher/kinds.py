@@ -211,6 +211,11 @@ class BaseKind:
     registry: MetricRegistry = MetricRegistry(known={})
     log_name: str = "run.log"
 
+    #: Whether a difference this kind reports is read across seeds. True for anything with
+    #: training dynamics; False for a run that is deterministic given its data, where a second
+    #: seed would produce the same number and the checks should not ask for one.
+    compares_seeds: bool = True
+
     def load(self, path: Path) -> RunSpec:
         from rl_researcher.spec import load_run_spec
 

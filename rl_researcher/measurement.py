@@ -46,6 +46,10 @@ class MeasurementKind(BaseKind):
     unit_noun = "pass"
     step_noun = "step"
 
+    #: A measurement is deterministic given its data: a second seed produces the same number,
+    #: so there is no spread to read and C05 does not ask for one.
+    compares_seeds = False
+
     #: The page's four unit tables are about arms and seeds; a measurement has one of each.
     page_sections = ("metrics", "running", "failed", "log")
 

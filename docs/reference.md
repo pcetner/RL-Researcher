@@ -185,11 +185,38 @@ by focus assist and by whether the session is interactive, so a failed toast is 
 line saying why and the watch continues. `scripts/install_watcher.ps1` registers `pythonw -m
 rl_researcher.watcher` as a logon task for one project (`-Remove` unregisters it).
 
+### `lint [--list] [--stage load,check,pin,run,lint,ci]`
+
+Every check that needs no run in flight, over the whole project: the documents on disk, the
+skills, the lessons file, and every spec under `[paths].specs`. Exit 1 on any error finding.
+
+`--list` prints the catalogue — id, stage, the lesson it exists because of, and what it asks —
+and stops.
+
+Stages exist so a question is asked where its answer can still change a plan: `load` needs only
+the spec, `check` runs before anything expensive, `pin` is the last moment before a registration
+is fixed, `run` asks about this machine now, `lint` needs a document on disk, and `ci` is the
+tooling checking itself. A check that raises is reported as a warning rather than propagating: a
+bug in a check must not be able to refuse a run.
+
+### `install_hooks [--repo DIR] [--uninstall] [--dry-run]`
+
+Sets `core.hooksPath` to the shipped `.githooks`, so the hook in the working tree is the hook
+that runs. A copy into `.git/hooks` goes stale and nobody finds out; `.git/hooks` is also not
+shared by git, which is why every project ends up with a hook one person has and the others do
+not.
+
+The hook hard-refuses one thing — a commit staging a path under a run directory whose lock is
+alive (C06) — and prints everything else `lint` finds without blocking. A hook that refuses on a
+warning is a hook people learn to pass `--no-verify` to, and then C06 stops working too. A
+project with its own `.githooks/pre-commit` keeps it.
+
 ### `install_skills [--dest DIR] [--dry-run]`
 
 Copies every directory under the package's `skills/` that holds a `SKILL.md` into
-`~/.claude/skills`, overwriting. No skills are written yet, so it currently finds none and says
-so rather than failing.
+`~/.claude/skills`, overwriting. Four are shipped: `rl-researcher` (run one), `rl-design`
+(write the spec), `rl-operate` (launch, watch, stop) and `rl-interpret` (read the result). They
+share one byte-identical invariants block, which C10 checks.
 
 ### `colab_mirror --src DIR --dst DIR [--every S] [--slow-glob PAT] [--slow-every S] [--once]`
 
