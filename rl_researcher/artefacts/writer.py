@@ -41,6 +41,18 @@ class Artefact:
         return layout_for(self.kind)
 
     def add(self, region: str, *blocks: Block) -> "Artefact":
+        """Put blocks in a generated section.
+
+        An authored section is refused. Its body comes from what a person wrote, so a block
+        added to one is never rendered and never missed -- which is how the report's footer,
+        the line naming the command that rebuilds the page, silently stopped appearing.
+        """
+        section = next((s for s in self.layout.sections if s.region == region), None)
+        if section is not None and section.owner == "authored":
+            raise ValueError(
+                f"{region!r} is an authored section of a {self.kind}: its body is what a person "
+                f"wrote, so a block put here would never be rendered. Use `stub()` to set what "
+                f"it says before anyone has written in it.")
         self.sections.setdefault(region, []).extend(b for b in blocks if b is not None)
         return self
 

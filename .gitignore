@@ -12,3 +12,6 @@ dist/
 .idea/
 .DS_Store
 Thumbs.db
+
+# The development log: local paths and notes to whoever is building this, not documentation.
+HANDOFF.md

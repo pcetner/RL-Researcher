@@ -7,7 +7,7 @@
 ``show`` prints the table a hypothesis cites, with a banner when the rows are not comparable.
 ``backfill`` walks every finished run in the project and writes the registered rows it is
 missing; it is safe to run repeatedly, because a registered row's identity is
-``(run, unit, metric, fingerprint, commit)`` and one already on file is not written twice.
+``(kind, run, unit, metric, fingerprint, commit)`` and one already on file is not written twice.
 """
 
 from __future__ import annotations
@@ -91,7 +91,7 @@ def backfill(config: Config, ledger: Ledger, *, dry_run: bool = False) -> List[F
         rows = findings_from_summary(
             summary, spec,
             artefact=_rel(config.root, out / "README.md"),
-            estimator=kind.estimator_name(spec.metrics[0].name if spec.metrics else ""),
+            kind=kind,
             date=committed_on(summary_path),
         )
         new = [r for r in rows if not any(x.identity == r.identity for x in ledger.rows)]

@@ -2,10 +2,12 @@
 
     python -m rl_researcher.install_skills [--dest ~/.claude/skills] [--dry-run]
 
-Each directory under ``skills/`` (``rl-researcher``, ``rl-design``, ``rl-operate``,
-``rl-interpret``) is copied whole, overwriting what is there, so re-running after an upgrade
-updates them. Prints one line per file that changed. Skills live in the user folder rather
-than a project's ``.claude/skills`` so every repo that imports the package gets them.
+Each directory under ``skills/`` holding a ``SKILL.md`` is copied whole, overwriting what is
+there, so re-running after an upgrade updates them. Prints one line per file that changed.
+Skills live in the user folder rather than a project's ``.claude/skills`` so every repository
+that imports the package gets them.
+
+No skills are written yet, so this currently finds none and says so.
 """
 
 from __future__ import annotations
@@ -27,7 +29,10 @@ def default_dest() -> Path:
 def install(dest: Path, *, dry_run: bool = False, source: Path = SKILLS_DIR) -> List[str]:
     """Copy every skill directory under ``source`` into ``dest``; return the changed paths."""
     if not source.is_dir():
-        raise FileNotFoundError(f"no skills directory at {source}")
+        # The normal state of a fresh clone: the skills are not written yet, and are not
+        # shipped in the wheel either. Nothing to install is not an error, and a traceback
+        # here would read as a broken install rather than as an empty one.
+        return []
     changed: List[str] = []
     for skill in sorted(p for p in source.iterdir() if p.is_dir() and (p / "SKILL.md").is_file()):
         for src in sorted(p for p in skill.rglob("*") if p.is_file()):
@@ -53,7 +58,9 @@ def main(argv=None) -> int:
     for rel in changed:
         print(f"{verb} {dest / rel}")
     if not changed:
-        print(f"skills in {dest} are up to date")
+        print(f"no skills to install: {SKILLS_DIR} holds none"
+              if not SKILLS_DIR.is_dir() or not any(SKILLS_DIR.iterdir())
+              else f"skills in {dest} are up to date")
     return 0
 
 

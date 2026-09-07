@@ -273,3 +273,47 @@ def _spec_of(project):
 
     spec_path = project / "studies" / "toy-line-fit.toml"
     return kind_for(spec_path, load_config()).load(spec_path)
+
+
+def test_the_target_column_says_the_rule_the_marks_are_judged_by(project):
+    """`passes` is strict, so a column reading "at least 0.900" beside a 0.900 marked failed is
+    the document disagreeing with itself."""
+    from rl_researcher.artefacts.run_report import _target
+    from rl_researcher.artefacts.report import passes
+
+    higher, lower = _M("r2", "higher", bar=0.9), _M("loss", "lower", bar=0.1)
+    assert _target(higher).startswith("> ") and _target(lower).startswith("< ")
+    assert passes("higher", 0.9, 0.9) is False, "the column and the rule must agree"
+    assert _target(_M("x", "report")) == "report"
+
+
+def test_each_ledger_row_names_the_estimator_of_its_own_metric(tmp_path):
+    """A kind may compute two metrics with different functions. Stamping every row with the
+    first metric's estimator names the wrong one for the rest, and does it silently."""
+    from rl_researcher.ledger import findings_from_summary
+
+    class _Kind:
+        def estimator_name(self, metric):
+            return f"module.compute_{metric}"
+
+    class _Spec:
+        name = "r"
+        metrics = [_M("a", "higher", bar=0.0), _M("b", "lower", bar=1.0)]
+        decision_touches: list = []
+
+    summary = {"run": "r", "runs": [{"arm": "x", "seed": 0, "metrics": {"a": 1.0, "b": 0.5}}]}
+    rows = {f.metric: f.estimator for f in findings_from_summary(summary, _Spec(), kind=_Kind())}
+    assert rows == {"a": "module.compute_a", "b": "module.compute_b"}
+
+
+def test_a_block_added_to_an_authored_section_is_refused_rather_than_dropped(tmp_path):
+    """It would never be rendered and never be missed, which is how the report's footer -- the
+    line naming the command that rebuilds the page -- silently stopped appearing."""
+    from rl_researcher.blocks import Footer
+
+    art = Artefact(kind="report", title="t")
+    with pytest.raises(ValueError, match="authored section"):
+        art.add("reading", Footer(text="x"))
+    art.add("provenance", Footer(text="x", command="python -m rl_researcher.report r"))
+    text = write(art, tmp_path / "README.md").read_text(encoding="utf-8")
+    assert "python -m rl_researcher.report r" in body_of(text, "generated", "provenance")

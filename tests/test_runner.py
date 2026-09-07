@@ -207,3 +207,22 @@ def test_the_heartbeat_carries_what_a_dashboard_needs(toy):
     for key in ("unit", "arm", "seed", "status", "step", "max_steps", "elapsed_seconds", "history", "updated"):
         assert key in last, key
     assert last["history"]["loss"] and len(last["history"]["loss"]) <= 120
+
+
+def test_a_units_last_heartbeat_says_how_it_actually_ended(project):
+    """It always said "done", so a unit that hit the time cap before its step budget was
+    recorded as having finished and only the result file said otherwise. A dashboard and a
+    watcher both read the heartbeat."""
+    import json
+
+    from rl_researcher.run import main as run_main
+    from rl_researcher.units import unit_dir
+
+    assert run_main(["studies/toy-line-fit.toml", "--max-seconds", "0"]) == 0
+    out = project / "docs" / "toy" / "toy-line-fit"
+    for unit in ("ols/seed0", "noisy/seed0"):
+        cell = unit_dir(out, unit)
+        beat = json.loads((cell / "progress.json").read_text(encoding="utf-8"))
+        result = json.loads((cell / "results.json").read_text(encoding="utf-8"))
+        assert result["status"] == "incomplete", "a zero time cap stops before the step budget"
+        assert beat["status"] == "incomplete", beat["status"]

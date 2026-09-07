@@ -166,7 +166,12 @@ def run(
             # dashboard, a watcher) is reading the same record and should see the same names.
             beat_fields: Dict[str, Any] = dict(r.extra)
             beat_fields.update(
-                unit=unit, arm=arm, seed=seed, status="done", step=r.steps, max_steps=max_steps,
+                unit=unit, arm=arm, seed=seed,
+                # The unit's own word for how it ended. This always said "done", so a unit that
+                # hit the time cap before its step budget was recorded as having finished, and
+                # only the result file said otherwise.
+                status="done" if r.status == "complete" else r.status,
+                step=r.steps, max_steps=max_steps,
                 elapsed_seconds=round(r.seconds, 1), result=res_path.relative_to(out).as_posix(),
                 resumed_from_step=r.resumed_from_step,
                 history={k: thin(v) for k, v in r.history.items() if v})
