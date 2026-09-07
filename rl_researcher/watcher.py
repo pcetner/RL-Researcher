@@ -245,7 +245,12 @@ def tick(config: Config, *, quiet: bool = False, dry_run: bool = False,
             say(f"{change.run}: {change.did[0]}\n{traceback.format_exc()}")
         body = "; ".join([change.detail] + change.did) if change.did else change.detail
         notify.notify(config, change.title, body, quiet=quiet)
-    if found and not dry_run:
+    if dry_run:
+        # Not even the tick file. Writing it would mean the next real tick saw no change and
+        # skipped every report the dry run had just told you was ready -- a dry run that
+        # silently costs you the thing it was previewing.
+        return found
+    if found:
         refresh(config, say)
     write_tick(config, seen)
     return found
