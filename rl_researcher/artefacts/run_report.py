@@ -155,7 +155,8 @@ def metric_rows(spec: Any, summary: Dict[str, Any], arms: Sequence[str]) -> List
             cells.append(fmt(mean, spread, n, div) + mark)
             tones.append("warn" if mark == " =" else tone_of(verdict))
         rows.append(MetricRow(name=m.name, cells=cells, tones=tones,
-                              target=_target(m), why=m.why or ""))
+                              target=_target(m), baseline=str(getattr(m, "baseline", "") or ""),
+                              why=m.why or ""))
     return rows
 
 
@@ -199,15 +200,27 @@ def lanes(spec: Any, summary: Dict[str, Any]) -> List[Lane]:
     return out
 
 
+def unit_headers(summary: Dict[str, Any]) -> Tuple[str, ...]:
+    """The size column appears only when the units report one — a run whose unit is a training
+    cell has a parameter count and a run whose unit is an engine arm does not."""
+    if any(r.get("params") for r in summary.get("runs") or []):
+        return ("unit", "size", "steps", "wall", "status", "note")
+    return ("unit", "steps", "wall", "status", "note")
+
+
 def unit_rows(summary: Dict[str, Any]) -> Tuple[List[List[Any]], List[List[str]]]:
     rows, tones = [], []
+    sized = "size" in unit_headers(summary)
     for r in summary.get("runs") or []:
         arm = r.get("arm", r.get("variant", ""))
         status = str(r.get("status", ""))
         resumed = r.get("resumed_from_step")
-        rows.append([f"{arm}/seed{r.get('seed')}", r.get("steps"), fmt_duration(r.get("seconds")),
+        size = [f"{float(r.get('params') or 0) / 1e6:.1f}M"] if sized else []
+        rows.append([f"{arm}/seed{r.get('seed')}", *size,
+                     r.get("steps"), fmt_duration(r.get("seconds")),
                      status, "" if resumed is None else f"resumed from {resumed}"])
-        tones.append(["", "", "", "" if status == "complete" else "warn", "muted"])
+        tones.append(["", *([""] if sized else []), "", "",
+                      "" if status == "complete" else "warn", "muted"])
     return rows, tones
 
 
@@ -262,7 +275,7 @@ def build(spec: Any, summary: Dict[str, Any], out: Path, *, kind: Any = None,
             Scorecard(title="Scorecard", lanes=lanes(spec, summary)))
 
     rows, tones = unit_rows(summary)
-    art.add("units", UnitsTable(title="Units", headers=("unit", "steps", "wall", "status", "note"),
+    art.add("units", UnitsTable(title="Units", headers=unit_headers(summary),
                                 rows=rows, tones=tones))
     failed = [(("crit"), f"{r.get('arm', r.get('variant'))}/seed{r.get('seed')}",
                str(r.get("error", "did not finish"))) for r in runs if r.get("status") == "failed"]
@@ -276,9 +289,10 @@ def build(spec: Any, summary: Dict[str, Any], out: Path, *, kind: Any = None,
                          for name, src in _ordered(figs.items(), _order(kind, "figure_order"))])
 
     art.add("evidence", Gallery(title="Per unit", items=_evidence(runs, kind),
-                                note=_evidence_note(kind)))
+                                note=_evidence_note(kind),
+                                inline=bool(getattr(kind, "inline_evidence", False))))
 
-    art.add("provenance", KV(title="Provenance", pairs=_provenance(spec, summary)),
+    art.add("provenance", KV(title="Provenance", pairs=_provenance(spec, summary, kind)),
             Footer(text=f"Generated from {out.name}/results.json.", command=command))
 
     rows_written = []
@@ -310,10 +324,20 @@ def _order(kind: Any, attr: str) -> Sequence[str]:
 
 
 def _ordered(items: Any, order: Sequence[str]) -> List[Tuple[str, Any]]:
-    """``items`` in the declared order, then whatever is left, alphabetically. A figure a kind
-    forgot to name still appears; it just appears last."""
+    """``items`` in the declared order, then whatever is left, alphabetically.
+
+    A name in the order also claims a numbered series under it: ``strip`` places ``strip_0``,
+    ``strip_1`` and ``strip_2``, in that order, where ``strip`` sits. A study writes one strip
+    per held-out window and does not know how many until it runs, so naming each one in the
+    order would mean the order changes when the window count does.
+
+    Anything the order does not name still appears; it appears last.
+    """
     got = dict(items)
-    named = [(n, got.pop(n)) for n in order if n in got]
+    named: List[Tuple[str, Any]] = []
+    for n in order:
+        for key in sorted(k for k in got if k == n or str(k).startswith(f"{n}_")):
+            named.append((key, got.pop(key)))
     return named + sorted(got.items())
 
 
@@ -362,7 +386,10 @@ def _data(summary: Dict[str, Any]) -> str:
     return f"{name}@{digest}" if name and digest else name
 
 
-def _provenance(spec: Any, summary: Dict[str, Any]) -> List[Tuple[str, str]]:
+def _provenance(spec: Any, summary: Dict[str, Any], kind: Any = None) -> List[Tuple[str, str]]:
+    """Where the numbers came from. The framework knows most of it; what only the kind knows —
+    how a snapshot was split, which manifest it came from — the kind supplies through
+    ``provenance``, and it goes at the end rather than in prose above the table."""
     budget = summary.get("budget") or {}
     cad = getattr(spec, "cadence", None)
     pairs = [
@@ -381,6 +408,9 @@ def _provenance(spec: Any, summary: Dict[str, Any]) -> List[Tuple[str, str]]:
                                  f"{cad.checkpoint_seconds:.0f}s"))
     if spec.decision_touches:
         pairs.append(("Touches", "; ".join(spec.decision_touches)))
+    extra = getattr(kind, "provenance", None)
+    if callable(extra):
+        pairs += [(str(k), str(v)) for k, v in (extra(spec, summary) or [])]
     return pairs
 
 

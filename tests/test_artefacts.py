@@ -404,8 +404,25 @@ def test_the_evidence_gallery_says_what_each_kind_of_picture_shows():
     assert "real frames" in note and "participation ratio" in note
     assert "disagreement" not in note                                  # declared, no caption
 
+    # A study writes one strip per held-out window and does not know how many until it runs,
+    # so `strip` in the order claims the whole numbered series rather than each being named.
     runs = [{"arm": "ols", "seed": 0,
-             "evidence": {"training": "t.png", "strip": "s.png", "disagreement": "d.png"}}]
+             "evidence": {"training": "t.png", "strip_1": "s1.png", "strip_0": "s0.png",
+                          "disagreement": "d.png", "surprise": "z.png"}}]
     assert [label for label, _ in _evidence(runs, _Ordered())] == [
-        "ols seed 0 · strip", "ols seed 0 · disagreement", "ols seed 0 · training"]
+        "ols seed 0 · strip_0", "ols seed 0 · strip_1", "ols seed 0 · disagreement",
+        "ols seed 0 · training", "ols seed 0 · surprise"]
     assert _evidence_note(object()) == "Linked here; shown in the page beside this file."
+
+
+def test_a_kind_whose_evidence_is_the_argument_draws_it_rather_than_linking_it():
+    """A reviewer's page self-contained for the four figures and not for the rollout strips is
+    self-contained for the half they do not argue with. Inlining in the markdown is what puts
+    the images in the HTML beside it, which is rendered from that markdown."""
+    from rl_researcher.blocks.text import Gallery
+
+    items = [("ols seed 0 · strip_0", "ols/seed0/strip_0.png")]
+    assert "![ols seed 0 · strip_0](ols/seed0/strip_0.png)" in Gallery(items=items, inline=True).md()
+    linked = Gallery(items=items).md()
+    assert "![" not in linked and "[strip_0.png](ols/seed0/strip_0.png)" in linked
+    assert Gallery(items=(), inline=True).md() == ""

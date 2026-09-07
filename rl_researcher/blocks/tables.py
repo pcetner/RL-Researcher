@@ -22,6 +22,7 @@ class MetricRow:
     cells: Sequence[str] = ()
     tones: Sequence[str] = ()
     target: str = ""
+    baseline: str = ""
     why: str = ""
 
 
@@ -39,11 +40,21 @@ class MetricsTable(Block):
   table.t td.target { color:var(--muted); font-variant-numeric:tabular-nums }
 """
 
+    @property
+    def _has_baseline(self) -> bool:
+        """The column appears only when some metric declares one. `> 1.000` says what the mark
+        is judged by; the baseline says what the number is *against* — `chance = 1/54`,
+        `copy-last`, `config floor 0.10` — and a table of targets alone drops that."""
+        return any(r.baseline for r in self.rows)
+
     def _headers(self) -> Sequence[str]:
-        return ["metric", "target", *self.arms]
+        mid = ["baseline", "target"] if self._has_baseline else ["target"]
+        return ["metric", *mid, *self.arms]
 
     def _body(self) -> Sequence[Sequence[str]]:
-        return [[r.name, r.target, *r.cells] for r in self.rows]
+        mid = (lambda r: [r.baseline or "—", r.target]) if self._has_baseline else \
+              (lambda r: [r.target])
+        return [[r.name, *mid(r), *r.cells] for r in self.rows]
 
     def md(self) -> str:
         table = rows_to_md(self._headers(), self._body())
@@ -53,7 +64,8 @@ class MetricsTable(Block):
         return table + ("\n\n" + "\n".join(notes) if notes else "")
 
     def html(self) -> str:
-        tones = [["", "", *r.tones] for r in self.rows]
+        pad = ["", "", ""] if self._has_baseline else ["", ""]
+        tones = [[*pad, *r.tones] for r in self.rows]
         table = rows_to_html(self._headers(), self._body(), tones=tones)
         notes = ""
         if self.show_why:
