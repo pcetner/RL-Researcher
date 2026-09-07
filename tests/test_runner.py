@@ -297,3 +297,28 @@ def test_run_and_check_ask_the_kind_the_same_questions(toy, monkeypatch):
     collect(kind, spec, config)          # what `python -m rl_researcher.check` calls
     run(spec, kind, out, config=config)  # and what the run path calls
     assert asked == ["check", "check"]
+
+
+def test_a_finished_run_rebuilds_its_summary_without_preparing_again(toy, monkeypatch):
+    """Re-running a finished run is a request to rebuild the summary from what is on disk.
+
+    Preparing is what costs — a snapshot read into memory, a model built, for Auto-SM64's engine
+    loop an engine binary demanded. Doing it for zero units means a summary cannot be rebuilt on
+    a machine that could not have produced the results in the first place.
+    """
+    config, kind, spec, out = toy
+    run(spec, kind, out, config=config)
+    calls = []
+    real = type(kind).prepare
+    monkeypatch.setattr(type(kind), "prepare",
+                        lambda self, s, ctx: calls.append(1) or real(self, s, ctx))
+    lines = []
+    summary = run(spec, kind, out, config=config, log=lines.append)
+    assert not calls, "prepared a run with nothing left to run"
+    assert len(summary["runs"]) == 6 and not summary["missing_units"]
+    assert "rebuilding the summary only" in "\n".join(lines)
+
+    # ...and one unit short of finished still prepares.
+    (unit_dir(out, "ols/seed0") / "results.json").unlink()
+    run(spec, kind, out, config=config)
+    assert calls == [1]
