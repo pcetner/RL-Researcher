@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "rl-researcher"
-version = "0.1.0"
+version = "0.2.0"
 description = "Tooling for LLM-run, human-gated research: pre-registered runs, generated artefacts, a findings ledger, a cost gate"
 readme = "README.md"
 requires-python = ">=3.10"

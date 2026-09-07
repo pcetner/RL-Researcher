@@ -81,7 +81,8 @@ class Finding:
     reference: Optional[float] = None   # that arm's value at the time
     passed: Optional[bool] = None       # None = nothing to pass
     estimator: str = ""                 # the function that computed it
-    commit: str = ""
+    commit: str = ""                    # the consuming project's, at the time of the run
+    framework: str = ""                 # which rl_researcher computed it
     fingerprint: str = ""
     data: str = ""                      # "<snapshot>@<digest[:8]>"
     budget: str = ""
@@ -312,6 +313,7 @@ def findings_from_summary(summary: Dict[str, Any], spec: Any, *, artefact: str =
                 # the wrong one for the rest, silently.
                 estimator=(kind.estimator_name(m.name) if kind is not None else estimator),
                 commit=str(summary.get("git_sha", ""))[:12],
+                framework=str(summary.get("rl_researcher", "")),
                 fingerprint=str(summary.get("fingerprint", "")),
                 data=data or _data_tag(summary),
                 budget=budget_text,
