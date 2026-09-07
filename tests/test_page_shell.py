@@ -83,41 +83,49 @@ def test_no_colour_is_baked_where_a_theme_cannot_reach_it():
 
 # ── the stylesheet the charts are drawn against ───────────────────────────────────────────
 # Moved from Auto-SM64's dashboard tests, where they asserted against that project's own
-# stylesheet. The rules are the package's, and they live in LEGACY_DASHBOARD_CSS: this package
-# currently carries two chart implementations, `charts.py` with that stylesheet and
-# `blocks/viz.py` with BASE_CSS. Step 6 merges them; until it does, each has to be checked
-# against the sheet it is actually drawn with, because a rule in the wrong one is a chart with
-# markup and no ink.
+# stylesheet. The rules are the package's, and they live beside the code that draws them:
+# `charts.CHART_CSS` for what `charts.py` puts on a page, `BASE_CSS` for the tokens both use.
+# A rule in the wrong sheet is a chart with markup and no ink, and a page ships the stylesheet
+# of exactly the blocks it used -- so a drawing block that does not carry CHART_CSS renders
+# unstyled, which is what `Block.undeclared` holds every block to.
+
+
+def _rule(css: str, selector: str) -> str:
+    return css.split(selector)[1].split("}")[0]
+
 
 def test_the_curve_axis_lines_are_drawn_and_not_just_present():
     """They shipped with no stroke rule, so they were in the markup and invisible on the page."""
-    from rl_researcher.style import LEGACY_DASHBOARD_CSS
+    from rl_researcher.charts import CHART_CSS
 
-    rule = LEGACY_DASHBOARD_CSS.split(".spark .cax")[1].split("}}")[0]
+    rule = _rule(CHART_CSS, ".spark .cax")
     assert "stroke:currentColor" in rule and "opacity:" in rule
 
 
 def test_the_y_labels_are_centred_on_the_ends_they_mark():
     """Stacked flush, each sat about a tenth of the plot away from its own extreme."""
-    from rl_researcher.style import LEGACY_DASHBOARD_CSS
+    from rl_researcher.charts import CHART_CSS
 
     for sel in (".curvebox .yax .hi", ".curvebox .yax .lo"):
-        rule = LEGACY_DASHBOARD_CSS.split(sel)[1].split("}}")[0]
-        assert "translateY(" in rule, sel
+        assert "translateY(" in _rule(CHART_CSS, sel), sel
 
 
-def test_no_chart_colour_is_a_baked_hex_in_either_stylesheet():
+def test_no_chart_colour_is_a_baked_hex_in_any_stylesheet():
     """A hex here is the light-mode hex, and dark mode then carries brick red on near-black.
 
-    The tokens are declared once, in BASE_CSS's `:root`; every other reference in either sheet
-    has to go through `var()` or dark mode cannot move it.
+    The tokens are declared once, in BASE_CSS's `:root`; every other reference in every sheet
+    the package ships has to go through `var()` or dark mode cannot move it.
     """
     from rl_researcher import plotstyle as ps
-    from rl_researcher.style import BASE_CSS, LEGACY_DASHBOARD_CSS
+    from rl_researcher.blocks import ALL_BLOCKS
+    from rl_researcher.charts import CHART_CSS
+    from rl_researcher.style import BASE_CSS
 
+    sheets = BASE_CSS + CHART_CSS + "".join(dict.fromkeys(b.css for b in ALL_BLOCKS))
     for name in ("CRIT", "OK", "WARN"):
-        both = BASE_CSS + LEGACY_DASHBOARD_CSS
-        assert both.count(getattr(ps, name)) == 1, name
+        assert sheets.count(getattr(ps, name)) == 1, name
     for token in ("--crit", "--ok", "--warn"):
-        assert f"var({token})" in LEGACY_DASHBOARD_CSS, token
+        # Referenced through `var()` wherever it is used, and declared exactly once, in the
+        # `:root` block every page carries.
+        assert f"var({token})" in sheets, token
         assert token in BASE_CSS, token

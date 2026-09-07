@@ -126,6 +126,9 @@ class Page:
     chip_tone: str = "muted"
     refresh: Optional[int] = None
     extra_css: str = ""
+    #: SVG ``<defs>`` the page's blocks refer to by id — the per-seed fill patterns a marker
+    #: uses. They are defined once for the document rather than repeated in every drawing.
+    defs: str = ""
 
     def css(self) -> str:
         seen: List[str] = []
@@ -156,6 +159,7 @@ class Page:
             f"{meta}<title>{esc(self.title)}</title>\n"
             f"<style>{self.css()}{PAGE_CSS}</style>\n"
             "</head><body>\n"
+            f"{self.defs}"
             f'<div class="wrap">\n'
             f'<div class="head"><h1>{esc(self.title)}</h1>{badge}{sub}'
             f'<span class="spacer"></span>{THEME_BUTTONS}</div>\n'

@@ -46,10 +46,21 @@ def replace_with_retry(tmp: Path, target: Path, *, attempts: int = ATTEMPTS,
             wait *= 2
 
 
+def temp_for(target: Path) -> Path:
+    """The temporary ``target`` is written through, beside it so the replace stays atomic.
+
+    The whole name plus a suffix, not ``with_suffix``, which replaces the extension: that gave
+    ``report.md`` and ``report.html`` one temporary between them, and on a case-insensitive
+    filesystem ``STATE.md`` and ``state.json`` another. Nothing writes two of those at once
+    today; this is so nothing can start to.
+    """
+    return target.with_name(target.name + ".tmp")
+
+
 def write_text(target: Path, text: str, *, encoding: str = "utf-8") -> Path:
     """Write ``text`` to ``target`` atomically: no reader ever sees a partial file."""
     target.parent.mkdir(parents=True, exist_ok=True)
-    tmp = target.with_suffix(".tmp")
+    tmp = temp_for(target)
     tmp.write_text(text, encoding=encoding)
     replace_with_retry(tmp, target)
     return target

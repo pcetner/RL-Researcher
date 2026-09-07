@@ -104,6 +104,10 @@ class MeasurementKind(BaseKind):
         from rl_researcher.artefacts.measurement import write_measurement
 
         payload = self.payload_of({"runs": results}) or self.payload_of(ctx.previous or {})
+        # From the context, never from git: on a rebuild the run's own provenance stands, and a
+        # regenerated page must not attribute the numbers to whatever re-rendered them.
+        payload.setdefault("git_sha", ctx.commit)
+        payload.setdefault("rl_researcher", ctx.framework)
         path = write_measurement(spec, payload, out, kind=self, ledger=_ledger(ctx),
                                  command=f"python -m rl_researcher.report {spec.name}")
         ctx.log(f"measurement -> {path}")

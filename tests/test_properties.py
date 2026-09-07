@@ -196,3 +196,69 @@ def test_a_decision_nobody_has_made_is_not_recorded_as_one(project):
     before = len(open_ledger(config).query(kind="decision"))
     assert decide_main([spec.name]) == 1
     assert len(open_ledger(config).query(kind="decision")) == before
+
+
+# ── hands-off, for a kind that is not a study ─────────────────────────────────────────────
+
+def _measurement_project(project):
+    """The project of `test_measurement`, wired for the watcher: a measurement spec that has
+    run once, so the next tick sees it reach `finished`."""
+    from rl_researcher.runner import run as run_units
+    from tests.test_measurement import SPEC, Counting
+
+    cfg = project / "rl-researcher.toml"
+    cfg.write_text(cfg.read_text(encoding="utf-8").replace(
+        'toy = "rl_researcher.examples.toy.kind:ToyKind"',
+        'toy = "rl_researcher.examples.toy.kind:ToyKind"\n'
+        'measure = "tests.test_measurement:Counting"').replace(
+        'toy = "docs/toy"', 'toy = "docs/toy"\nmeasure = "docs/measurements"'),
+        encoding="utf-8")
+    (project / "studies" / "toy-measure.toml").write_text(SPEC, encoding="utf-8")
+    config = load_config()
+    kind = Counting()
+    spec = kind.load(project / "studies" / "toy-measure.toml")
+    out = config.out_root("measure") / spec.name
+    Counting.calls = 0
+    run_units(spec, kind, out, config=config, log=lambda _s: None)
+    return config, kind, spec, out
+
+
+def test_a_measurement_that_finished_unattended_keeps_its_own_document(project):
+    """The watcher acts on every finished run, and a measurement is not a report.
+
+    Laying one out as a report presents numbers that answer a question as though they had
+    settled a registered comparison — and writes a `registered` ledger row for a run that
+    registered nothing, which the ledger is append-only and cannot take back.
+    """
+    from rl_researcher.artefacts.layouts import check_layout
+    from rl_researcher.ledger import open_ledger
+
+    config, kind, spec, out = _measurement_project(project)
+    assert check_layout((out / "README.md").read_text(encoding="utf-8"), "measurement") == []
+
+    changed = watcher.tick(config)
+    assert [c.what for c in changed] == ["finished"]
+
+    text = (out / "README.md").read_text(encoding="utf-8")
+    assert check_layout(text, "measurement") == [], "the watcher rewrote it as another kind"
+    for heading in ("## Question", "## Method", "## Result", "## Verdict"):
+        assert heading in text
+
+    rows = open_ledger(config).query(run=spec.name)
+    assert rows, "the measurement's own post-hoc rows were lost"
+    assert all(r.kind == "post-hoc" for r in rows), \
+        f"the watcher wrote {[r.kind for r in rows]} for a run that registered nothing"
+
+
+def test_the_watcher_finds_a_run_whose_spec_file_is_not_named_after_it(project):
+    """Every other path resolves a run by the `name` inside the file. The watcher is the one
+    that must work with nobody there to correct it."""
+    config, kind, spec, out = _finished(project)
+    (project / "studies" / "toy-line-fit.toml").rename(project / "studies" / "registered.toml")
+
+    changed = watcher.tick(config)
+
+    assert [c.what for c in changed] == ["finished"]
+    assert not any("action failed" in d for c in changed for d in c.did), \
+        [d for c in changed for d in c.did]
+    assert (out / "README.md").is_file()

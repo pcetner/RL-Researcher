@@ -51,13 +51,32 @@ class CheckFailed(Refused):
     pass
 
 
-def git_sha() -> str:
-    """The code a result was produced with."""
+def git_sha(cwd: Optional[Path] = None) -> str:
+    """The code a result was produced with. ``cwd`` chooses whose repository is asked; the
+    default is the working directory, which is the consuming project."""
     try:
         return subprocess.check_output(["git", "rev-parse", "HEAD"], text=True, timeout=5,
+                                       cwd=None if cwd is None else str(cwd),
                                        stderr=subprocess.DEVNULL).strip()
     except (OSError, subprocess.SubprocessError):
         return "unknown"
+
+
+def framework_stamp() -> str:
+    """Which version of *this package* computed a number.
+
+    ``git_sha`` records the consuming project, which is the other half. The README's argument
+    for pinning a commit is that a finished run cannot be reproduced from the two repositories
+    alone if the dependency can move underneath it — and until this existed, nothing on disk
+    said which version of the dependency had been underneath it.
+
+    A wheel has no repository to ask, so it is the version alone; a checkout adds the commit,
+    which is what the framework is actually run from while it is being built.
+    """
+    from rl_researcher import __version__
+
+    sha = git_sha(Path(__file__).resolve().parent)
+    return f"{__version__}+g{sha[:8]}" if sha != "unknown" else __version__
 
 
 def _no_page(*_a: Any, **_k: Any) -> None:
@@ -68,17 +87,21 @@ def _no_page_factory(spec: RunSpec, kind: RunKind, out: Path, log: Log) -> PageW
     return _no_page
 
 
-def _run_checks(kind: RunKind, spec: RunSpec, config: Any, log: Log, skip: bool) -> None:
+def _run_checks(kind: RunKind, spec: RunSpec, config: Any, log: Log, skip: bool,
+                out: Optional[Path] = None) -> None:
     """Ask the kind what it knows before the first unit, and refuse on anything at error level.
 
     This runs before ``prepare``, so a refusal costs nothing: no model is loaded, no engine has
     booted, no unit directory exists. The alternative the kinds were writing before this existed
     was a raise inside ``run_unit``, which discovers halfway through the second unit that the
     data was wrong and throws away everything in front of it.
+
+    ``out`` reaches the ``run``-stage checks, whose question is about this machine now rather
+    than about the registration.
     """
     from rl_researcher.findings import collect, errors
 
-    findings = collect(kind, spec, config)
+    findings = collect(kind, spec, config, out)
     for f in findings:
         log(f"check [{f.check}] {f.level}: {f.message}")
     bad = errors(findings)
@@ -150,6 +173,11 @@ def run(
     try:
         if gate is not None:
             gate(spec, kind, out, max_steps=max_steps, max_seconds=max_seconds, config=config, device=device)
+        else:
+            # Said out loud for the same reason `--no-check` is: a gate walked past leaves the
+            # same numbers on disk as one that was cleared, and the log is the only place that
+            # can say which happened. The library default is no gate, so this is honest there too.
+            log("no cost gate was applied to this run (--no-gate, or a caller that passed none)")
         lock = acquire_lock(out, spec.name, log)
         install_stop_handler()
         try:
@@ -159,9 +187,14 @@ def run(
             page = _no_page
         page(force=True)
         for g in kind.guards(spec):
-            if g.is_blocked() and not allow_guards:
+            if not g.is_blocked():
+                continue
+            if not allow_guards:
                 raise GuardBlocked(f"{g.name}: {g.message}")
-        _run_checks(kind, spec, config, log, skip_checks)
+            # A waived guard is a condition the kind said a run must not start under, started
+            # anyway. It goes in the run's own log beside the numbers it produced.
+            log(f"waived a blocked guard with --allow-guards: {g.name}: {g.message}")
+        _run_checks(kind, spec, config, log, skip_checks, out)
         all_units = kind.units(spec)
         selected = list(all_units)
         if units:
@@ -183,8 +216,11 @@ def run(
         # them: the ledger's row identity carries the commit, so a restamp writes a second row
         # claiming the same numbers were measured by code that never ran them.
         commit = git_sha() if todo else str(previous.get("git_sha") or git_sha())
+        framework = (framework_stamp() if todo
+                     else str(previous.get("rl_researcher") or framework_stamp()))
         ctx = RunContext(out=out, log=log, device=device, max_steps=max_steps, max_seconds=max_seconds,
-                         config=config, selected=selected, commit=commit, previous=previous)
+                         config=config, selected=selected, commit=commit, previous=previous,
+                         framework=framework)
         prepared = None
         if todo:
             prepared = kind.prepare(spec, ctx)
@@ -258,6 +294,10 @@ def run(
             "kind": kind.name,
             "fingerprint": fingerprint,
             "git_sha": commit,
+            # The project's commit is half the provenance; this is the other half. On a rebuild
+            # it is carried forward with the rest, so a regenerated document attributes the
+            # numbers to the framework that made them rather than the one re-rendering them.
+            "rl_researcher": framework,
             "device": device.name if device else None,
             "device_fingerprint": device.fingerprint if device else None,
             "budget": {"max_steps": max_steps, "max_seconds": max_seconds},

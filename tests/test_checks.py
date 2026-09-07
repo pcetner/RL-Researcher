@@ -327,7 +327,7 @@ def test_C11_the_two_lists_are_each_others_index():
 
 def test_the_shipped_skills_are_under_a_hundred_and_twenty_lines():
     """A skill nobody finishes reading is a skill nobody follows."""
-    root = Path(__file__).resolve().parent.parent / "skills"
+    root = Path(__file__).resolve().parent.parent / "rl_researcher" / "skills"
     files = sorted(root.rglob("SKILL.md"))
     assert len(files) == 4
     for path in files:
@@ -336,7 +336,7 @@ def test_the_shipped_skills_are_under_a_hundred_and_twenty_lines():
 
 
 def test_every_shipped_skill_carries_the_same_invariants_and_says_the_hard_rules():
-    root = Path(__file__).resolve().parent.parent / "skills"
+    root = Path(__file__).resolve().parent.parent / "rl_researcher" / "skills"
     blocks = set()
     for path in sorted(root.rglob("SKILL.md")):
         text = path.read_text(encoding="utf-8")
@@ -394,3 +394,18 @@ def test_lint_outside_a_project_still_asks_the_checks_that_need_no_spec(tmp_path
 
     assert lint_main(["--stage", "check"]) == 1          # nothing it could ask
     assert "no rl-researcher.toml" in capsys.readouterr().out
+
+
+def test_C10_says_so_when_it_cannot_find_the_skills_at_all(tmp_path, monkeypatch):
+    """A check that reports nothing when it cannot find its inputs is worse than no check.
+
+    Installed from a wheel that shipped no skills, C10 found no files, compared an empty set
+    against itself and passed -- so the one thing saying four copies of a rule had not drifted
+    was silently answering a question it had not asked.
+    """
+    import rl_researcher.checks as checks_mod
+
+    monkeypatch.setattr(checks_mod, "_skill_files", lambda ctx: [])
+    found = run_checks("ci", root=tmp_path)
+    assert "C10" in _ids(found)
+    assert any(f.level == "error" for f in found if f.check == "C10")

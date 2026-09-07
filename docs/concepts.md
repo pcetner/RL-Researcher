@@ -164,6 +164,22 @@ usually under the line. Two qualifications: when the basis is `budget-cap` the e
 `max_seconds`, so `--max-seconds` is what actually lowers it and `--max-steps` alone does not; and
 a device or a tag listed in `gate.always_gated` is gated whatever the estimate says.
 
+Two consequences of estimating the work *remaining* are worth stating outright, because both are
+deliberate and both look like holes.
+
+A run that is half finished is half the estimate, so resuming one is often ungated where starting
+it was not. That is the intended reading: the compute already spent is spent. It also means a
+gated run can be walked under the line in pieces with repeated `--units`, which is the same
+mechanism that splits a run across machines and cannot be closed without closing that too. The
+approval is bound to the fingerprint rather than to the launch, so the honest answer is that the
+gate asks about cost, not about resolve.
+
+And `budget.max_seconds` defaults to eight hours, so under `budget-cap` — the basis on any
+machine with no throughput rows yet — the estimate is eight hours times the unit count. A spec
+that does not set its own `max_seconds` is therefore gated on a machine that has never run
+anything, however cheap it really is. Running the toy kind, or the project's canary, once on a
+new machine is what replaces that guess with a measurement.
+
 ## Artefacts, regions and blocks
 
 An **artefact** is a document a run leaves behind: a report, a measurement, a diagnosis, the state

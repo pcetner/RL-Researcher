@@ -192,3 +192,33 @@ def test_run_exits_4_on_a_check_error_and_no_check_waives_it(project, capsys, mo
     assert "refused:" in printed and "the data moved" in printed
 
     assert run.main([SPEC, "--max-seconds", "5", "--no-check"]) == 0
+
+
+def test_the_skills_the_hook_and_the_lessons_are_inside_the_package():
+    """They are the package's own assets, and three commands and two checks need them.
+
+    Kept beside the package rather than inside it, they were in the repository and absent from
+    every wheel built from it: `install_skills` found none, `install_hooks` exited 1, C10 had
+    nothing to compare and C11 fell through to a project file that need not exist. All of it
+    invisible from a checkout, which is the only way the package had ever been run.
+    """
+    from pathlib import Path
+
+    import rl_researcher
+    from rl_researcher.spec import load_toml
+
+    pkg = Path(rl_researcher.__file__).resolve().parent
+    wanted = [pkg / "lessons.md", pkg / "hooks" / "pre-commit",
+              *[pkg / "skills" / n / "SKILL.md" for n in
+                ("rl-researcher", "rl-design", "rl-operate", "rl-interpret")]]
+    missing = [p for p in wanted if not p.is_file()]
+    assert not missing, f"not inside the package, so not in any wheel: {missing}"
+
+    # ... and declared, which is the other half of shipping: a file inside the package that no
+    # glob names is still left out of the wheel.
+    # Through the package's own loader, which falls back to `tomli` under 3.10 -- `tomllib`
+    # is 3.11+, and CI runs both.
+    globs = load_toml(pkg.parent / "pyproject.toml")["tool"]["setuptools"]["package-data"]["rl_researcher"]
+    for path in wanted:
+        rel = path.relative_to(pkg).as_posix()
+        assert any(Path(rel).match(g) for g in globs), f"{rel} matches no package-data glob"

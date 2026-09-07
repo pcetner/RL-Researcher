@@ -35,6 +35,9 @@ class Artefact:
     text: Dict[str, str] = field(default_factory=dict)
     #: What an authored section says when the file does not exist yet.
     stubs: Dict[str, str] = field(default_factory=dict)
+    #: A line under the title, before the first section. The state page says here that nothing
+    #: in it is typed by hand, which belongs to the page rather than to any of its sections.
+    preamble: str = ""
 
     @property
     def layout(self) -> Layout:
@@ -76,6 +79,8 @@ class Artefact:
     def md(self) -> str:
         stamp = " ".join(f"{k}={v}" for k, v in self.header.items() if v)
         out = [f"<!-- rl: kind={self.kind} {stamp} -->".replace("  ", " "), f"# {self.title}", ""]
+        if self.preamble:
+            out += [self.preamble.strip(), ""]
         for s in self.layout.sections:
             body = self.body_for(s.region, s.owner)
             out += [f"## {s.heading}", "",
@@ -113,11 +118,17 @@ def adopt_legacy(old: str, new: str, layout: Layout) -> str:
 
 
 def write(artefact: Artefact, md_path: Path, *, html: bool = True,
-          subtitle: str = "") -> Path:
+          subtitle: str = "", html_path: Optional[Path] = None) -> Path:
     """Write the artefact, preserving whatever a person had already written in it.
 
     Returns the markdown path. The HTML beside it is rendered from the same text with the
     region markers stripped, and figures inlined so the page opens with no network.
+
+    ``html_path`` names the page when it is not the markdown's own stem — a report is
+    ``README.md`` and ``report.html``, the state page ``STATE.md`` and ``state.html``. Both
+    used to write the derived name and move the file afterwards, which is two writes and a
+    rename where one write will do, and on a case-sensitive filesystem `STATE.html` and
+    `state.html` are not even the same file.
     """
     md_path = Path(md_path)
     fresh = artefact.md()
@@ -128,7 +139,7 @@ def write(artefact: Artefact, md_path: Path, *, html: bool = True,
     atomic.write_text(md_path, fresh)
     if html:
         atomic.write_text(
-            md_path.with_suffix(".html"),
+            Path(html_path) if html_path is not None else md_path.with_suffix(".html"),
             md_to_html(strip_regions(fresh), kind=artefact.kind, title=artefact.title,
                        subtitle=subtitle or f"generated {stamp_now()}",
                        embed_images_from=md_path.parent))

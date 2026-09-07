@@ -223,3 +223,74 @@ def test_the_state_page_is_written_as_markdown_json_and_html(project):
     html = (docs / "state.html").read_text(encoding="utf-8")
     assert "<!doctype html>" in html and "kind-state" in html
     assert "<!-- ledger:" not in html and "<!-- generated:" not in html
+
+
+def test_a_result_says_which_framework_produced_it(project):
+    """The commit in a summary is the *consuming project's*. Nothing said which version of this
+    package computed the numbers, though the README's whole argument for pinning a commit is
+    that a run cannot otherwise be reproduced from the two repositories alone.
+    """
+    from rl_researcher.config import kind_for, load_config, out_dir_for
+    from rl_researcher.ledger import open_ledger
+    from rl_researcher.report import main as report_main
+    from rl_researcher.runner import run
+
+    config = load_config()
+    path = project / "studies" / "toy-line-fit.toml"
+    kind = kind_for(path, config)
+    spec = kind.load(path)
+    out = out_dir_for(spec, config)
+    summary = run(spec, kind, out, config=config, log=lambda _s: None)
+
+    stamp = summary.get("rl_researcher")
+    assert stamp and stamp.startswith("0."), f"the summary does not name the framework: {stamp!r}"
+
+    assert report_main([spec.name]) == 0
+    rows = open_ledger(config).query(run=spec.name)
+    assert rows and all(r.framework == stamp for r in rows), \
+        "a ledger row does not carry the framework that computed it"
+    assert stamp in (out / "README.md").read_text(encoding="utf-8")
+
+
+def test_two_writers_never_mint_the_same_finding_id(tmp_path):
+    """A watcher tick acting on a finished run while someone runs `report` by hand is two
+    writers. Reading the rows once at open and appending later gave both the same `F####`, and
+    an append-only file cannot tell two rows with one id apart afterwards."""
+    import threading
+
+    from rl_researcher.ledger import Finding, Ledger
+
+    path = tmp_path / "findings.jsonl"
+    n = 12
+    ready = threading.Barrier(n)
+
+    def write(i):
+        ready.wait()
+        Ledger(path).add(Finding(kind="post-hoc", run=f"r{i}", metric="m", value=float(i)))
+
+    threads = [threading.Thread(target=write, args=(i,)) for i in range(n)]
+    for th in threads:
+        th.start()
+    for th in threads:
+        th.join()
+
+    ids = [r.id for r in Ledger(path).rows]
+    assert len(ids) == n, f"{n} rows written, {len(ids)} on file"
+    assert len(set(ids)) == n, f"duplicate ids: {sorted(ids)}"
+
+
+def test_the_state_page_is_built_by_the_writer_like_every_other_artefact(project):
+    """It was assembled here as a list of strings, so the `STATE` layout declared five regions
+    that nothing emitted and this was the one document whose shape was never checked against
+    its own kind."""
+    from rl_researcher.artefacts.layouts import LAYOUTS, check_layout
+    from rl_researcher.regions import find
+
+    _finish_a_run(project)
+    assert state.main([]) == 0
+    text = (project / "docs" / "STATE.md").read_text(encoding="utf-8")
+
+    assert check_layout(text, "state") == []
+    regions = {r.arg for r in find(text) if r.kind == "generated"}
+    assert regions == {s.region for s in LAYOUTS["state"].sections}
+    assert "kind=state" in text.split("\n", 1)[0]

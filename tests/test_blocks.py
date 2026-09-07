@@ -13,9 +13,12 @@ import pytest
 
 pytestmark = pytest.mark.tier1
 
-from rl_researcher.blocks import (ALL_BLOCKS, Banner, Claims, Curve, Curves, Figure,  # noqa: E402
-                                  Footer, Gallery, Grid, Header, KV, Lane, LogTail, Mark,
-                                  MetricRow, MetricsTable, Notices, Page, Progress, Prose,
+from rl_researcher.blocks import (ALL_BLOCKS, ArmCell, ArmTable, Banner, Claims,  # noqa: E402
+                                  Curve, Curves, DoneUnit, DoneUnits, Failure, Failures, Figure,
+                                  Footer, Gallery, Grid, Header, IndexEntry, IndexTable, KV,
+                                  Ladder, Lane, Lead, LiveUnit, LiveUnits, LogTail, Mark,
+                                  LogLine, MetricLane, MetricLanes, MetricRow, MetricsTable, Notices,
+                                  Page, PageFoot, Progress, Prose, QueuedUnits, RunLog,
                                   Scorecard, Stub, Tiles, UnitsTable, numbers_in)
 
 #: One populated instance of every block. Empty blocks pass every rule trivially, so the
@@ -47,6 +50,44 @@ SAMPLES = [
          notes="The hinge is doing the work."),
     Tiles(items=[("18/18", "units done"), ("5.4 h", "elapsed")]),
     UnitsTable(title="Units", rows=[("var5/seed0", 10000, 1007.2, "complete")]),
+    # ── the live page ──────────────────────────────────────────────────────────────────────
+    ArmTable(title="By arm", noun="arm", order=["ctrl", "var5"],
+             heads=[("Participation ratio", "> 0.100")],
+             rows=[("var5", 3, [ArmCell("0.108", "ok", "✓", "± 0.006", "", True)])]),
+    DoneUnits(units=[DoneUnit(arm="var5", seed=0, seconds=1007.2, step=10000,
+                              cells=[("0.108", "ok", "✓")],
+                              curves=[("Representation loss", [3.0, 1.5], 1.0)],
+                              notes=["resumed at 4,200"])],
+              order=["ctrl", "var5"], heads=[("Participation ratio", "> 0.100")],
+              curve_titles=["Representation loss"]),
+    Failures(units=[Failure(arm="var5", seed=1, error="CUDA out of memory",
+                            where=["stopped at 4,200 of 10,000"])], order=["var5"]),
+    IndexTable(entries=[IndexEntry(name="study5", kind="study", state="running", tone="accent",
+                                   href="studies/study5/dashboard.html", done="2/6",
+                                   total_pct=33.0, eta="4m")]),
+    Ladder(noun="arm", seeds=[0, 1], order=["var5"],
+           cells={("var5", 0): ("done", "ok", "Participation ratio 0.108"),
+                  ("var5", 1): ("queued", "muted", "10,000 steps")}),
+    Lead(arm="var5", seed=0, order=["ctrl", "var5"],
+         stats=[("Participation ratio", 0.108, "> 0.100", True)]),
+    LiveUnits(units=[LiveUnit(arm="var5", seed=2, step=4200, max_steps=10000, rate=3.7,
+                              eta_seconds=1560.0,
+                              curves=[("Representation loss", [3.0, 2.0, 1.5], 1.5, 1.0)],
+                              notes=["updated 3s ago"])],
+              order=["ctrl", "var5"], curve_titles=["Representation loss"]),
+    MetricLanes(title="Registered metrics", order=["ctrl", "var5"],
+                lanes=[MetricLane(name="participation_ratio_norm", title="Participation ratio",
+                                  target="> 0.100", bar=0.1, direction="higher",
+                                  definition="Effective dimensions over latent width.",
+                                  why="The collapse floor.", mean="0.108",
+                                  values=[("var5", 0.108, "var5 seed 0: 0.108")], seeds=[0])]),
+    QueuedUnits(units=[("ctrl", 0), ("ctrl", 1)], order=["ctrl", "var5"]),
+    PageFoot(run="study5", device="NVIDIA GeForce GTX 1650", note="snapshot castle-k20-1",
+             when="14:02:11", tail="refreshing every 15s"),
+    RunLog(title="log", lines=[
+        LogLine(text="FAILED: CUDA out of memory", tone="crit", stamp="14:02:09"),
+        LogLine(stamp="14:02:10", unit="var5 seed 0", colour="#4c8", step="4,200",
+                max_steps="10,000", rest="loss 1.502")]),
 ]
 
 IDS = [type(b).__name__ for b in SAMPLES]
