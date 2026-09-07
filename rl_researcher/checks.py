@@ -524,9 +524,26 @@ def _lessons_file(ctx: Context) -> Optional[Path]:
     return got if got is not None and Path(got).is_file() else None
 
 
+#: Only the skills this package ships carry the invariants block. A project may keep its own
+#: skill beside them -- Auto-SM64 has one for its instruments and its engine -- and that one
+#: extends the four rather than repeating their rules, so it is not asked for a copy.
+SHIPPED_PREFIX = "rl-"
+
+
 def _skill_files(ctx: Context) -> List[Path]:
-    root = Path(ctx.root) if ctx.root else Path(__file__).resolve().parent.parent
-    found = sorted((root / "skills").rglob("SKILL.md"))
+    """Every copy of a shipped skill this project can see: its own, its installed ones, and the
+    package's. All of them, because the one being read is whichever is installed."""
+    roots = [Path(__file__).resolve().parent.parent / "skills"]
+    if ctx.root:
+        roots = [Path(ctx.root) / "skills", Path(ctx.root) / ".claude" / "skills"] + roots
+    found: List[Path] = []
+    for root in roots:
+        if not root.is_dir():
+            continue
+        found += [p for p in sorted(root.rglob("SKILL.md"))
+                  if p.parent.name.startswith(SHIPPED_PREFIX)]
+        if found:
+            break                       # the project's own copies are the ones being read
     return found
 
 
