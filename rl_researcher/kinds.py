@@ -13,7 +13,8 @@ import importlib
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Protocol, Sequence, runtime_checkable
+from typing import (Any, Callable, Dict, Generic, List, Optional, Protocol, Sequence, TypeVar,
+                    runtime_checkable)
 
 from rl_researcher.checkpoint import write_sidecar
 from rl_researcher.spec import CadenceSpec, MetricRegistry, RunSpec
@@ -21,6 +22,18 @@ from rl_researcher.stop import stop_requested
 from rl_researcher.units import thin, write_progress
 
 Log = Callable[[str], None]
+
+#: The spec type a kind reads.
+#:
+#: A kind with structure of its own is told, in `docs/run-kinds.md`, to declare a `RunSpec`
+#: subclass with real fields — so that a mistake is caught at load time rather than as a
+#: `KeyError` an hour into a run. Its `units(spec: StudySpec)` then narrows the parameter its
+#: base declares, which is a Liskov violation and which every type checker reports as one.
+#:
+#: The protocol is parameterised instead, so the advice the documentation gives is the advice
+#: the types express: a kind is a `RunKind[StudySpec]`, and the framework, which does not care
+#: which spec a kind reads, asks for `RunKind[Any]`.
+SpecT = TypeVar("SpecT", bound=RunSpec)
 
 
 @dataclass(frozen=True)
@@ -180,32 +193,32 @@ class UnitContext:
 
 
 @runtime_checkable
-class RunKind(Protocol):
+class RunKind(Protocol[SpecT]):
     """What a kind implements. Only ``units``, ``load``, ``run_unit`` and ``registry`` are
     needed for a run; the rest have working defaults through :class:`BaseKind`."""
 
     name: str
     registry: MetricRegistry
 
-    def load(self, path: Path) -> RunSpec: ...
-    def units(self, spec: RunSpec) -> List[str]: ...
-    def unit_class(self, spec: RunSpec, unit: str) -> str: ...
+    def load(self, path: Path) -> SpecT: ...
+    def units(self, spec: SpecT) -> List[str]: ...
+    def unit_class(self, spec: SpecT, unit: str) -> str: ...
     def device(self) -> Optional[DeviceInfo]: ...
-    def guards(self, spec: RunSpec) -> List[Guard]: ...
-    def check(self, spec: RunSpec, ctx: Any) -> List[Finding]: ...
-    def pin(self, spec: RunSpec, path: Path) -> Optional[str]: ...
-    def prepare(self, spec: RunSpec, ctx: RunContext) -> Any: ...
-    def run_unit(self, spec: RunSpec, unit: str, prepared: Any, ctx: UnitContext) -> UnitResult: ...
+    def guards(self, spec: SpecT) -> List[Guard]: ...
+    def check(self, spec: SpecT, ctx: Any) -> List[Finding]: ...
+    def pin(self, spec: SpecT, path: Path) -> Optional[str]: ...
+    def prepare(self, spec: SpecT, ctx: RunContext) -> Any: ...
+    def run_unit(self, spec: SpecT, unit: str, prepared: Any, ctx: UnitContext) -> UnitResult: ...
     def read_result(self, result: Dict[str, Any]) -> Dict[str, Any]: ...
-    def summarise(self, spec: RunSpec, results: List[Dict[str, Any]], out: Path, ctx: RunContext) -> Dict[str, Any]: ...
-    def curves(self, spec: RunSpec) -> List[CurveSpec]: ...
+    def summarise(self, spec: SpecT, results: List[Dict[str, Any]], out: Path, ctx: RunContext) -> Dict[str, Any]: ...
+    def curves(self, spec: SpecT) -> List[CurveSpec]: ...
     def log_vocab(self) -> LogVocab: ...
-    def blocks(self, spec: RunSpec, summary: Dict[str, Any], out: Path, view: str) -> List[Any]: ...
+    def blocks(self, spec: SpecT, summary: Dict[str, Any], out: Path, view: str) -> List[Any]: ...
     def instrument_for(self, metric: str) -> Optional[str]: ...
     def estimator_name(self, metric: str) -> str: ...
 
 
-class BaseKind:
+class BaseKind(Generic[SpecT]):
     """Defaults for everything a kind need not customise. Subclass it, set ``name`` and
     ``registry``, and implement ``units``, ``run_unit`` and, usually, ``load``."""
 
@@ -218,15 +231,23 @@ class BaseKind:
     #: seed would produce the same number and the checks should not ask for one.
     compares_seeds: bool = True
 
-    def load(self, path: Path) -> RunSpec:
+    def load(self, path: Path) -> SpecT:
+        """The generic loader, which builds a plain :class:`RunSpec`.
+
+        A kind that declares a spec type of its own overrides this and returns that type; the
+        cast is what says so. It is the one place the parameter cannot be honoured by the
+        default, because a default cannot know the subclass a kind chose.
+        """
+        from typing import cast
+
         from rl_researcher.spec import load_run_spec
 
-        return load_run_spec(path, registry=self.registry, default_kind=self.name)
+        return cast(SpecT, load_run_spec(path, registry=self.registry, default_kind=self.name))
 
-    def units(self, spec: RunSpec) -> List[str]:
+    def units(self, spec: SpecT) -> List[str]:
         raise NotImplementedError
 
-    def arms(self, spec: RunSpec) -> List[str]:
+    def arms(self, spec: SpecT) -> List[str]:
         seen: List[str] = []
         for u in self.units(spec):
             arm = u.split("/seed", 1)[0]
@@ -234,25 +255,25 @@ class BaseKind:
                 seen.append(arm)
         return seen
 
-    def unit_class(self, spec: RunSpec, unit: str) -> str:
+    def unit_class(self, spec: SpecT, unit: str) -> str:
         return f"{self.name}/{spec.budget.max_steps}steps"
 
     def device(self) -> Optional[DeviceInfo]:
         return None
 
-    def guards(self, spec: RunSpec) -> List[Guard]:
+    def guards(self, spec: SpecT) -> List[Guard]:
         return []
 
-    def check(self, spec: RunSpec, ctx: Any) -> List[Finding]:
+    def check(self, spec: SpecT, ctx: Any) -> List[Finding]:
         return []
 
-    def pin(self, spec: RunSpec, path: Path) -> Optional[str]:
+    def pin(self, spec: SpecT, path: Path) -> Optional[str]:
         return None
 
-    def prepare(self, spec: RunSpec, ctx: RunContext) -> Any:
+    def prepare(self, spec: SpecT, ctx: RunContext) -> Any:
         return None
 
-    def run_unit(self, spec: RunSpec, unit: str, prepared: Any, ctx: UnitContext) -> UnitResult:
+    def run_unit(self, spec: SpecT, unit: str, prepared: Any, ctx: UnitContext) -> UnitResult:
         raise NotImplementedError
 
     def read_result(self, result: Dict[str, Any]) -> Dict[str, Any]:
@@ -265,10 +286,10 @@ class BaseKind:
         """
         return result
 
-    def summarise(self, spec: RunSpec, results: List[Dict[str, Any]], out: Path, ctx: RunContext) -> Dict[str, Any]:
+    def summarise(self, spec: SpecT, results: List[Dict[str, Any]], out: Path, ctx: RunContext) -> Dict[str, Any]:
         return {}
 
-    def curves(self, spec: RunSpec) -> List[CurveSpec]:
+    def curves(self, spec: SpecT) -> List[CurveSpec]:
         return []
 
     def log_vocab(self) -> LogVocab:
@@ -276,7 +297,7 @@ class BaseKind:
                                "report ->": "ok", "complete": "ok"},
                         step_line=r"^\d\d:\d\d:\d\d \[(?P<unit>[^\]]+)\] step\s+(?P<step>\d+)/(?P<of>\d+)")
 
-    def blocks(self, spec: RunSpec, summary: Dict[str, Any], out: Path, view: str) -> List[Any]:
+    def blocks(self, spec: SpecT, summary: Dict[str, Any], out: Path, view: str) -> List[Any]:
         return []
 
     def instrument_for(self, metric: str) -> Optional[str]:
@@ -286,7 +307,7 @@ class BaseKind:
         return f"{type(self).__module__}.{type(self).__name__}"
 
 
-def load_kind(entry: str) -> RunKind:
+def load_kind(entry: str) -> "RunKind[Any]":
     """Instantiate ``"package.module:ClassName"``."""
     if ":" not in entry:
         raise ValueError(f"a kind entry is 'module:Class', got {entry!r}")
