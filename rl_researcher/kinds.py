@@ -119,6 +119,15 @@ class RunContext:
     max_seconds: float
     config: Any = None
     selected: Optional[List[str]] = None   # unit ids this machine runs; None = all
+    #: The commit that produced this run's units. On a rebuild — every unit already finished —
+    #: it is the commit the earlier summary recorded, not today's HEAD. A kind that stamps
+    #: provenance must take it from here rather than asking git, or a regenerated document
+    #: attributes measurements to code that did not make them.
+    commit: str = ""
+    #: The summary this run is replacing, if there is one. On a rebuild nothing was prepared,
+    #: so anything ``summarise`` would have taken from ``prepare`` — the data split, a snapshot
+    #: manifest — is not available to recompute and must be carried forward from here.
+    previous: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass

@@ -208,3 +208,23 @@ def read_unit(cell: Path, *, unit: str, heartbeat_seconds: float,
             st.stale = st.age is None or st.age > 2 * heartbeat_seconds + 30
     st.resumable = st.checkpoint_step is not None
     return st
+
+
+def stamp_of(updated: Any) -> Optional[datetime]:
+    """A heartbeat's ``updated`` field as a UTC datetime; ``None`` if it cannot be read.
+
+    The same two-form dispatch as :func:`age_of`, for the callers that want to *print* when
+    something happened rather than how long ago. Without it a reader stringifies whatever the
+    file holds, and a run from before the ISO rule reports as ``Finished 1788749820.0716286``.
+    """
+    if updated is None or isinstance(updated, bool):
+        return None
+    try:
+        if isinstance(updated, (int, float)):
+            return datetime.fromtimestamp(float(updated), timezone.utc)
+        if not isinstance(updated, str):
+            return None
+        stamp = datetime.fromisoformat(updated)
+        return stamp if stamp.tzinfo else stamp.replace(tzinfo=timezone.utc)
+    except (ValueError, TypeError, OverflowError, OSError):
+        return None

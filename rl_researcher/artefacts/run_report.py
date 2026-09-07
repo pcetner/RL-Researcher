@@ -65,8 +65,10 @@ def outcome(spec: Any, summary: Dict[str, Any]) -> Tuple[str, Dict[str, List[str
     dead = degenerate(spec, summary, _arms(spec, summary))
     ties: Dict[str, List[str]] = {}
     missed: Dict[str, List[str]] = {}
+    judged: Dict[str, int] = {}
     for arm in _arms(spec, summary):
         bad = []
+        seen = 0
         for name in wanted:
             m = spec.metric(name)
             if m is None:
@@ -75,18 +77,31 @@ def outcome(spec: Any, summary: Dict[str, Any]) -> Tuple[str, Dict[str, List[str
             ref = _reference(agg, m, name)
             if name in dead:
                 continue
+            verdict = judge(m, mean, div, reference=ref, arm=arm)
+            if verdict is not None:
+                seen += 1
             if tied(m, mean, reference=ref, arm=arm):
+                seen += 1
                 ties.setdefault(arm, []).append(name)
                 bad.append(name)          # a tie is not a pass; the sentence below says which
-            elif judge(m, mean, div, reference=ref, arm=arm) is False:
+            elif verdict is False:
                 bad.append(name)
         missed[arm] = bad
+        judged[arm] = seen
     if not wanted:
         return "No bars were registered, so this run reports rather than decides.", missed
-    cleared = [a for a, bad in missed.items() if not bad]
+    # An arm none of whose bars could be judged has not cleared them. Nothing said no, but
+    # nothing said yes either, and "cleared every registered bar" printed over a column of
+    # `n/a` is the most confident sentence in the document making the least contact with it.
+    unjudged = [a for a in missed if not judged.get(a)]
+    cleared = [a for a, bad in missed.items() if not bad and judged.get(a)]
     parts = []
     if cleared:
         parts.append("**Cleared every registered bar:** " + ", ".join(f"`{a}`" for a in cleared) + ".")
+    if unjudged:
+        parts.append("**Not judged:** " + ", ".join(f"`{a}`" for a in unjudged)
+                     + " — no registered bar produced a verdict for "
+                     + ("them" if len(unjudged) > 1 else "it") + ".")
     for arm, bad in missed.items():
         if not bad:
             continue
@@ -98,7 +113,7 @@ def outcome(spec: Any, summary: Dict[str, Any]) -> Tuple[str, Dict[str, List[str
         if drew:
             said.append(f"tied its control on {', '.join(drew)}")
         parts.append(f"`{arm}` " + " and ".join(said) + ".")
-    if not cleared:
+    if not cleared and not unjudged:
         parts.insert(0, "**No arm cleared every registered bar.**")
     return " ".join(parts), missed
 
