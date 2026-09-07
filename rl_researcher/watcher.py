@@ -31,6 +31,7 @@ from typing import Callable, Dict, List, Optional
 from rl_researcher import atomic, notify
 from rl_researcher.cli import console
 from rl_researcher.config import Config, kind_for, load_config, out_dir_for
+from rl_researcher.spec import load_toml
 from rl_researcher.status import RunStatus, run_status
 
 TICK_NAME = "watcher.json"
@@ -49,6 +50,9 @@ class Change:
     what: str        # "finished" | "failed" | "stale" | "overrun" | "started"
     detail: str = ""
     did: List[str] = field(default_factory=list)
+    #: Where the spec that registered this run was read from, carried through from the status
+    #: so acting on the change never has to guess the filename.
+    spec_path: str = ""
 
     @property
     def title(self) -> str:
@@ -144,6 +148,7 @@ def changes(config: Config, before: Dict[str, Seen], now: Dict[str, RunStatus],
                    projected_end=was.projected_end,
                    overrun_told=was.overrun_told, stale_told=was.stale_told)
         kind = st.kind
+        where = st.spec_path or ""
 
         if st.state == "running" and row.projected_end is None:
             eta = _eta(st)
@@ -155,19 +160,22 @@ def changes(config: Config, before: Dict[str, Seen], now: Dict[str, RunStatus],
             row.stale_told = False           # a fresh state deserves a fresh warning
             if st.state == "finished" and was.state not in TERMINAL:
                 found.append(Change(name, kind, "finished",
-                                    f"{done}/{total} units; the report is ready to read"))
+                                    f"{done}/{total} units; the report is ready to read",
+                                    spec_path=where))
             elif st.state == "FAILED" and was.state != "FAILED":
                 why = next((u.error or "" for u in st.units if u.failed), "")
                 found.append(Change(name, kind, "failed",
-                                    (why.splitlines() or [""])[0][:160] or "no reason recorded"))
+                                    (why.splitlines() or [""])[0][:160] or "no reason recorded",
+                                    spec_path=where))
             elif st.state == "running" and was.state != "running":
-                found.append(Change(name, kind, "started", f"{total} units"))
+                found.append(Change(name, kind, "started", f"{total} units", spec_path=where))
 
         if st.state == "STALE" and not was.stale_told:
             quiet = min((u.age for u in st.units if u.age is not None), default=None)
             row.stale_told = True
             found.append(Change(name, kind, "stale",
-                                f"no heartbeat for {int(quiet or 0)}s; the process may be gone"))
+                                f"no heartbeat for {int(quiet or 0)}s; the process may be gone",
+                                spec_path=where))
 
         # Overrun is measured against the projection this run made when it started, not
         # against the one it is making now: a run that keeps revising its estimate upward is
@@ -179,7 +187,8 @@ def changes(config: Config, before: Dict[str, Seen], now: Dict[str, RunStatus],
                 row.overrun_told = True
                 found.append(Change(name, kind, "overrun",
                                     f"{int(over / 60)} min past its own projection "
-                                    f"of {int(span / 60)} min"))
+                                    f"of {int(span / 60)} min",
+                                    spec_path=where))
         seen[name] = row
     return found, seen
 
@@ -195,25 +204,45 @@ def act(config: Config, change: Change, *, dry_run: bool = False) -> List[str]:
 
     A failure, a silence and an overrun are all things to be told about and none of them are
     things to do something about without knowing why — which is the person's part.
+
+    The document is chosen through :func:`rl_researcher.artefacts.write_artefact_for`, the same
+    call ``report`` makes. Writing a report here unconditionally laid a measurement out as one
+    and wrote it a ``registered`` ledger row — for a run that registered nothing, on the one
+    path where nobody is watching to notice.
     """
     if change.what != "finished" or dry_run:
         return []
-    from rl_researcher.artefacts.run_report import write_report
+    from rl_researcher.artefacts import write_artefact_for
     from rl_researcher.ledger import open_ledger
 
     did: List[str] = []
-    spec_path = Path(config.path("specs")) / f"{change.run}.toml"
+    # The spec is found by the path the status was read from, not by assuming the file is
+    # named after the run. Every other path resolves a run by the `name` inside the file, and
+    # the watcher is the one that has to work with nobody there to correct it.
+    spec_path = Path(change.spec_path) if change.spec_path else _spec_named(config, change.run)
     kind = kind_for(spec_path, config)
     spec = kind.load(spec_path)
     out = out_dir_for(spec, config)
     summary = json.loads((out / "results.json").read_text(encoding="utf-8"))
     ledger = open_ledger(config)
     before = len(ledger.rows)
-    path = write_report(spec, summary, out, kind=kind, ledger=ledger,
-                        command=f"python -m rl_researcher.report {spec.name}")
+    path = write_artefact_for(spec, summary, out, kind=kind, ledger=ledger,
+                              command=f"python -m rl_researcher.report {spec.name}")
     did.append(f"report -> {path}")
     did.append(f"ledger -> {len(ledger.rows) - before} new finding(s)")
     return did
+
+
+def _spec_named(config: Config, run: str) -> Path:
+    """The spec registering ``run``, for a change that carries no path of its own."""
+    specs = Path(config.path("specs"))
+    for path in sorted(specs.glob("*.toml")) if specs.is_dir() else []:
+        try:
+            if str(load_toml(path).get("name", "")) == run:
+                return path
+        except (OSError, ValueError):
+            continue
+    return specs / f"{run}.toml"
 
 
 def refresh(config: Config, log: Callable[[str], None]) -> None:

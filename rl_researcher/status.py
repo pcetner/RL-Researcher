@@ -31,6 +31,10 @@ class RunStatus:
     units: List[UnitState] = field(default_factory=list)
     state: str = "not started"
     tone: str = "muted"
+    #: Where the spec that registered this run was loaded from, so a caller acting on a status
+    #: does not have to guess that the file is named after the run. Every path here resolves a
+    #: run by the `name` inside the file; only the filename is free to differ.
+    spec_path: Optional[str] = None
 
     @property
     def bad(self) -> bool:
@@ -75,7 +79,8 @@ def run_status(spec: RunSpec, kind: RunKind, out: Path) -> RunStatus:
              for u in kind.units(spec)]
     lock = lock_holder(out)
     state, tone = state_of(units, lock)
-    return RunStatus(run=spec.name, kind=kind.name, out=out, lock=lock, units=units, state=state, tone=tone)
+    return RunStatus(run=spec.name, kind=kind.name, out=out, lock=lock, units=units, state=state,
+                     tone=tone, spec_path=getattr(spec, "source_path", None))
 
 
 def format_status(st: RunStatus) -> List[str]:
