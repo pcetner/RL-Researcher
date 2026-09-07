@@ -207,3 +207,69 @@ def test_prose_and_blocks_can_share_a_section(tmp_path):
     text = write(art, tmp_path / "README.md").read_text(encoding="utf-8")
     body = body_of(text, "generated", "summary")
     assert body.index("a sentence") < body.index("and a block")
+
+
+# --------------------------------------------------------------------------- judging an arm
+
+
+class _M:
+    """A MetricSpec, minus the validation, so a test can state an awkward registration."""
+
+    def __init__(self, name, direction="higher", bar=None, compare_to=None):
+        self.name, self.direction, self.bar, self.compare_to = name, direction, bar, compare_to
+        self.why = ""
+
+
+def test_the_reference_arm_of_a_comparison_is_not_judged_against_itself():
+    """A metric with compare_to = "random" asks whether an arm beat random. Asking it of random
+    is asking whether random beat itself, and the strict answer is no -- so the control came out
+    marked failed for being exactly as good as it is. That is a cross printed against a number
+    that was never on trial."""
+    from rl_researcher.artefacts.report import bar_mark, judge
+
+    m = _M("coverage_cells", "higher", compare_to="random")
+    assert judge(m, 324.67, reference=324.67, arm="random") is None
+    assert bar_mark(m, 324.67, reference=324.67, arm="random") == ""
+    # every other arm is still judged, and matching the control is not beating it
+    assert judge(m, 324.67, reference=324.67, arm="planner") is False
+    assert judge(m, 400.0, reference=324.67, arm="planner") is True
+
+
+def test_a_comparison_that_separates_nothing_is_named_rather_than_marked():
+    """parked_fraction, registered against random, came out 0.000 for every arm and three arms
+    were marked failed for not being strictly below zero. The bar was not wrong and the arms were
+    not failing: the measure did not move on this data."""
+    from rl_researcher.artefacts.report import degenerate_comparison
+
+    m = _M("parked_fraction", "lower", compare_to="random")
+    flat = {a: (0.0, 0.0, 3, 0) for a in ("planner", "planner_shuffled", "random")}
+    note = degenerate_comparison(m, flat)
+    assert note and "separates nothing" in note and "parked_fraction" in note
+
+    moved = dict(flat, planner=(0.084, 0.03, 3, 0))
+    assert degenerate_comparison(m, moved) is None, "a measure that moved is a real comparison"
+    assert degenerate_comparison(_M("x", "higher", bar=1.0), flat) is None, "a bar is not a comparison"
+
+
+def test_a_degenerate_comparison_leaves_every_arm_unmarked_and_says_why(project):
+    from rl_researcher.artefacts.run_report import degenerate, metric_rows
+
+    summary = _summary(project)
+    spec = _spec_of(project)
+    # Register a comparison nothing can separate: every arm gets the same value.
+    spec.metrics.append(_M("flat_metric", "lower", compare_to="ols"))
+    for r in summary["runs"]:
+        r["metrics"]["flat_metric"] = 0.0
+
+    arms = ["ols", "noisy"]
+    assert "flat_metric" in degenerate(spec, summary, arms)
+    row = next(r for r in metric_rows(spec, summary, arms) if r.name == "flat_metric")
+    assert all("✓" not in c and "✗" not in c for c in row.cells), row.cells
+    assert set(row.tones) == {"muted"}
+
+
+def _spec_of(project):
+    from rl_researcher.config import kind_for, load_config
+
+    spec_path = project / "studies" / "toy-line-fit.toml"
+    return kind_for(spec_path, load_config()).load(spec_path)

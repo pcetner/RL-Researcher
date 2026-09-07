@@ -143,7 +143,7 @@ def options(body: Optional[str]) -> List[str]:
 
 def _outcome_line(spec: Any, summary: Dict[str, Any]) -> str:
     """The registered outcome as the spec's own conjunction, per arm."""
-    from rl_researcher.artefacts.report import aggregate, passes
+    from rl_researcher.artefacts.report import aggregate, judge
 
     names = [m.name for m in spec.metrics]
     agg = aggregate(summary.get("runs") or [], names)
@@ -159,11 +159,9 @@ def _outcome_line(spec: Any, summary: Dict[str, Any]) -> str:
             if m is None:
                 continue
             mean, _spread, _n, diverged = per.get(name, (float("nan"), float("nan"), 0, 0))
-            bar = m.bar
-            if m.compare_to:
-                ref = agg.get(m.compare_to, {}).get(name)
-                bar = None if ref is None else ref[0]
-            if passes(m.direction, mean, bar, diverged=diverged) is not True:
+            ref_stats = agg.get(m.compare_to, {}).get(name) if m.compare_to else None
+            ref = None if ref_stats is None else ref_stats[0]
+            if judge(m, mean, diverged, reference=ref, arm=arm) is False:
                 bad.append(name)
         (missed if bad else cleared).append(arm if not bad else f"{arm} (missed {', '.join(bad)})")
     parts = []
@@ -195,7 +193,7 @@ def _headline(spec: Any, summary: Dict[str, Any], limit: int = 4) -> List[str]:
             if m is not None and m.compare_to:
                 r = agg.get(m.compare_to, {}).get(name)
                 ref = None if r is None else r[0]
-            mark = bar_mark(m, mean, diverged, reference=ref) if m is not None else ""
+            mark = bar_mark(m, mean, diverged, reference=ref, arm=arm) if m is not None else ""
             cells.append(fmt(mean, spread, n, diverged) + mark)
         rows.append(f"| {name} | " + " | ".join(cells) + " |")
     return rows

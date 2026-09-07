@@ -80,19 +80,74 @@ def passes(direction: str, value: Optional[float], bar: Optional[float], *,
     return v > b if direction == "higher" else v < b
 
 
-def bar_mark(metric: Any, mean: float, diverged: int = 0, *,
-             reference: Optional[float] = None) -> str:
-    """``" ✓"``, ``" ✗"`` or ``""`` for one metric of one arm.
+def judge(metric: Any, mean: float, diverged: int = 0, *, reference: Optional[float] = None,
+          arm: Optional[str] = None) -> Optional[bool]:
+    """Did this arm clear this metric? ``None`` when there is nothing to clear.
 
-    ``metric`` is a ``MetricSpec``. A metric with a ``bar`` is judged against it; a metric with
-    a ``compare_to`` is judged against ``reference``, the mean of the arm it names in this same
-    run, and reads as unjudged until that arm has one.
+    ``arm`` matters for one case and it is not a detail: **the reference arm of a comparison is
+    never judged against itself.** A metric with ``compare_to = "random"`` asks whether an arm
+    beat random; asking it of random is asking whether random beat itself, and the strict answer
+    is no, so the control comes out marked failed for being exactly as good as it is. That is
+    not a near-miss in the formatting, it is a cross printed against a number that was never on
+    trial.
     """
+    compare_to = getattr(metric, "compare_to", None)
+    if compare_to and arm is not None and arm == compare_to:
+        return None
     bar = getattr(metric, "bar", None)
-    if bar is None and getattr(metric, "compare_to", None):
+    if bar is None and compare_to:
         bar = reference
-    verdict = passes(getattr(metric, "direction", "report"), mean, bar, diverged=diverged)
+    return passes(getattr(metric, "direction", "report"), mean, bar, diverged=diverged)
+
+
+def tied(metric: Any, mean: float, *, reference: Optional[float] = None,
+         arm: Optional[str] = None) -> bool:
+    """Did this arm land exactly on the arm it was registered against?
+
+    A tie is not a loss, and printing it as one is how three arms came to be marked failed for
+    being exactly as un-parked as the control, which was the best score the measure allowed. It
+    is not a pass either: matching the control is not beating it, and a curiosity objective that
+    cannot move Mario further than chance has not earned its compute. So it is its own mark.
+    """
+    compare_to = getattr(metric, "compare_to", None)
+    if not compare_to or reference is None or (arm is not None and arm == compare_to):
+        return False
+    try:
+        return float(mean) == float(reference)
+    except (TypeError, ValueError):
+        return False
+
+
+def bar_mark(metric: Any, mean: float, diverged: int = 0, *,
+             reference: Optional[float] = None, arm: Optional[str] = None) -> str:
+    """``" ✓"``, ``" ="``, ``" ✗"`` or ``""`` for one metric of one arm."""
+    if tied(metric, mean, reference=reference, arm=arm):
+        return " ="
+    verdict = judge(metric, mean, diverged, reference=reference, arm=arm)
     return "" if verdict is None else (" ✓" if verdict else " ✗")
+
+
+def degenerate_comparison(metric: Any, stats: Dict[str, Stat]) -> Optional[str]:
+    """Why a ``compare_to`` cannot separate anything, when it cannot.
+
+    Registered against the random arm, ``parked_fraction`` came out 0.000 for every arm and the
+    three treatment arms were marked failed for not being strictly below zero. The bar was not
+    wrong and the arms were not failing: the measure could not move on this data, so the
+    comparison had nothing to say and said it as three crosses. A report that prints the marks
+    without printing this sentence is stating a result it does not have.
+    """
+    compare_to = getattr(metric, "compare_to", None)
+    name = getattr(metric, "name", "")
+    if not compare_to or compare_to not in stats:
+        return None
+    ref_mean = stats[compare_to][0]
+    values = [s[0] for s in stats.values() if s[2]]
+    if not values or any(v != v for v in values):
+        return None
+    if max(values) == min(values):
+        return (f"every arm scored {ref_mean:.3f} on {name}, so the comparison against "
+                f"`{compare_to}` separates nothing: this measure did not move on this data.")
+    return None
 
 
 def aggregate(runs: Sequence[Dict[str, Any]], metric_names: Sequence[str], *,

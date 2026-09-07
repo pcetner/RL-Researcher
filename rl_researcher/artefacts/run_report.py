@@ -17,7 +17,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-from rl_researcher.artefacts.report import aggregate, bar_mark, fmt, passes
+from rl_researcher.artefacts.report import (aggregate, degenerate_comparison, fmt,
+                                            judge, tied)
 from rl_researcher.artefacts.writer import Artefact, stamp, write
 from rl_researcher.blocks import (Banner, Claims, Figure, Footer, Gallery, KV, Lane, Mark,
                                   MetricRow, MetricsTable, Notices, Scorecard, Stub,
@@ -61,6 +62,8 @@ def outcome(spec: Any, summary: Dict[str, Any]) -> Tuple[str, Dict[str, List[str
     agg = aggregate(summary.get("runs") or [], names)
     wanted = list(getattr(spec, "conjunction", []) or
                   [m.name for m in spec.metrics if m.bar is not None or m.compare_to])
+    dead = degenerate(spec, summary, _arms(spec, summary))
+    ties: Dict[str, List[str]] = {}
     missed: Dict[str, List[str]] = {}
     for arm in _arms(spec, summary):
         bad = []
@@ -69,8 +72,13 @@ def outcome(spec: Any, summary: Dict[str, Any]) -> Tuple[str, Dict[str, List[str
             if m is None:
                 continue
             mean, _s, _n, div = agg.get(arm, {}).get(name, (float("nan"), float("nan"), 0, 0))
-            bar = m.bar if not m.compare_to else _reference(agg, m, name)
-            if passes(m.direction, mean, bar, diverged=div) is not True:
+            ref = _reference(agg, m, name)
+            if name in dead:
+                continue
+            if tied(m, mean, reference=ref, arm=arm):
+                ties.setdefault(arm, []).append(name)
+                bad.append(name)          # a tie is not a pass; the sentence below says which
+            elif judge(m, mean, div, reference=ref, arm=arm) is False:
                 bad.append(name)
         missed[arm] = bad
     if not wanted:
@@ -80,24 +88,57 @@ def outcome(spec: Any, summary: Dict[str, Any]) -> Tuple[str, Dict[str, List[str
     if cleared:
         parts.append("**Cleared every registered bar:** " + ", ".join(f"`{a}`" for a in cleared) + ".")
     for arm, bad in missed.items():
-        if bad:
-            parts.append(f"`{arm}` missed {', '.join(bad)}.")
+        if not bad:
+            continue
+        drew = [n for n in bad if n in ties.get(arm, [])]
+        lost = [n for n in bad if n not in drew]
+        said = []
+        if lost:
+            said.append(f"missed {', '.join(lost)}")
+        if drew:
+            said.append(f"tied its control on {', '.join(drew)}")
+        parts.append(f"`{arm}` " + " and ".join(said) + ".")
     if not cleared:
         parts.insert(0, "**No arm cleared every registered bar.**")
     return " ".join(parts), missed
 
 
+def degenerate(spec: Any, summary: Dict[str, Any], arms: Sequence[str]) -> Dict[str, str]:
+    """``{metric: why}`` for every registered comparison that cannot separate anything.
+
+    A metric in here carries no mark on any arm. Saying "these three arms failed" when the
+    measure did not move on this data is stating a result the run does not have, and it is how
+    `parked_fraction` came out as three crosses against a bar of zero that nothing could be
+    below.
+    """
+    agg = aggregate(summary.get("runs") or [], [m.name for m in spec.metrics])
+    out: Dict[str, str] = {}
+    for m in spec.metrics:
+        stats = {a: agg.get(a, {}).get(m.name, (float("nan"), 0.0, 0, 0)) for a in arms}
+        note = degenerate_comparison(m, stats)
+        if note:
+            out[m.name] = note
+    return out
+
+
 def metric_rows(spec: Any, summary: Dict[str, Any], arms: Sequence[str]) -> List[MetricRow]:
     agg = aggregate(summary.get("runs") or [], [m.name for m in spec.metrics])
+    dead = degenerate(spec, summary, arms)
     rows = []
     for m in spec.metrics:
         cells, tones = [], []
         for arm in arms:
             mean, spread, n, div = agg.get(arm, {}).get(m.name, (float("nan"), float("nan"), 0, 0))
             ref = _reference(agg, m, m.name)
-            cells.append(fmt(mean, spread, n, div) + bar_mark(m, mean, div, reference=ref))
-            tones.append(tone_of(passes(m.direction, mean, m.bar if not m.compare_to else ref,
-                                        diverged=div)))
+            if m.name in dead:
+                verdict, mark = None, ""
+            elif tied(m, mean, reference=ref, arm=arm):
+                verdict, mark = None, " ="
+            else:
+                verdict = judge(m, mean, div, reference=ref, arm=arm)
+                mark = "" if verdict is None else (" ✓" if verdict else " ✗")
+            cells.append(fmt(mean, spread, n, div) + mark)
+            tones.append("warn" if mark == " =" else tone_of(verdict))
         rows.append(MetricRow(name=m.name, cells=cells, tones=tones,
                               target=_target(m), why=m.why or ""))
     return rows
@@ -119,6 +160,7 @@ def lanes(spec: Any, summary: Dict[str, Any]) -> List[Lane]:
     """
     agg = aggregate(summary.get("runs") or [], [m.name for m in spec.metrics])
     arms = _arms(spec, summary)
+    dead = degenerate(spec, summary, arms)
     out = []
     for m in spec.metrics:
         ref = _reference(agg, m, m.name)
@@ -130,7 +172,8 @@ def lanes(spec: Any, summary: Dict[str, Any]) -> List[Lane]:
             if value is None:
                 continue
             marks.append(Mark(value=float(value), label=f"{arm} seed {r.get('seed')}",
-                              passed=passes(m.direction, float(value), bar),
+                              passed=None if m.name in dead
+                              else judge(m, float(value), reference=ref, arm=arm),
                               shape=SHAPES[arms.index(arm) % len(SHAPES)] if arm in arms else "circle",
                               seed=int(r.get("seed", 0))))
         out.append(Lane(metric=m.name, direction=m.direction, bar=bar, marks=marks,
@@ -174,6 +217,13 @@ def build(spec: Any, summary: Dict[str, Any], out: Path, *, kind: Any = None,
     if missing:
         art.add("summary", Banner("Units missing.", f"{len(missing)} unit(s) have no result: "
                                   + ", ".join(map(str, missing))))
+
+    # A registered comparison that cannot separate anything says so, above the marks it would
+    # otherwise print. Registered against random, parked_fraction came out 0.000 for every arm
+    # and three arms were marked failed for not being strictly below zero: the bar was not wrong
+    # and the arms were not failing, the measure could not move on this data.
+    for _name, note in degenerate(spec, summary, arms).items():
+        art.add("summary", Banner("Comparison is degenerate.", note))
 
     art.say("summary", f"**Hypothesis.** {spec.hypothesis}\n\n{line}")
     # Wall clock comes from the summary when the runner recorded it, and from the units when it
