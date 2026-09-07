@@ -273,10 +273,10 @@ def build(spec: Any, summary: Dict[str, Any], out: Path, *, kind: Any = None,
     if figures_note:
         art.say("figures", figures_note)
     art.add("figures", *[Figure(src=str(src), caption=_caption(kind, name), alt=name)
-                         for name, src in sorted(figs.items())])
+                         for name, src in _ordered(figs.items(), _order(kind, "figure_order"))])
 
-    art.add("evidence", Gallery(title="Per unit", items=_evidence(runs),
-                                note="Linked here; shown in the page beside this file."))
+    art.add("evidence", Gallery(title="Per unit", items=_evidence(runs, kind),
+                                note=_evidence_note(kind)))
 
     art.add("provenance", KV(title="Provenance", pairs=_provenance(spec, summary)),
             Footer(text=f"Generated from {out.name}/results.json.", command=command))
@@ -299,13 +299,46 @@ def _caption(kind: Any, name: str) -> str:
     return str(captions.get(name, ""))
 
 
-def _evidence(runs: Sequence[Dict[str, Any]]) -> List[Tuple[str, str]]:
+def _order(kind: Any, attr: str) -> Sequence[str]:
+    """The order a kind declares for its figures or its evidence.
+
+    Alphabetical is an order, not *the* order. A study's four figures argue in sequence --
+    scorecard, then drift, then the action panel, then collapse -- and sorting them puts
+    collapse first and the scorecard third, which is a different argument.
+    """
+    return tuple(str(n) for n in (getattr(kind, attr, None) or ()))
+
+
+def _ordered(items: Any, order: Sequence[str]) -> List[Tuple[str, Any]]:
+    """``items`` in the declared order, then whatever is left, alphabetically. A figure a kind
+    forgot to name still appears; it just appears last."""
+    got = dict(items)
+    named = [(n, got.pop(n)) for n in order if n in got]
+    return named + sorted(got.items())
+
+
+def _evidence(runs: Sequence[Dict[str, Any]], kind: Any = None) -> List[Tuple[str, str]]:
+    order = _order(kind, "evidence_order")
     out = []
     for r in runs:
         label = f"{r.get('arm', r.get('variant'))} seed {r.get('seed')}"
-        for what, src in sorted((r.get("evidence") or {}).items()):
+        for what, src in _ordered((r.get("evidence") or {}).items(), order):
             out.append((f"{label} · {what}", str(src)))
     return out
+
+
+def _evidence_note(kind: Any) -> str:
+    """What each kind of evidence shows, in the kind's own words, above the gallery.
+
+    A per-unit image with no caption is a picture; with one it is evidence. The captions are
+    the same for every unit, so they are said once here rather than forty times below.
+    """
+    captions = getattr(kind, "evidence_captions", None) or {}
+    lines = ["Linked here; shown in the page beside this file."]
+    for name in (_order(kind, "evidence_order") or sorted(captions)):
+        if captions.get(name):
+            lines.append(f"**{name}.** {captions[name]}")
+    return "\n\n".join(lines)
 
 
 def _posix(path: Any) -> str:
