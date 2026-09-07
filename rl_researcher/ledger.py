@@ -277,7 +277,7 @@ def findings_from_summary(summary: Dict[str, Any], spec: Any, *, artefact: str =
     from :func:`rl_researcher.artefacts.report.aggregate`, so the ledger and the report's
     headline table cannot disagree: they are the same call.
     """
-    from rl_researcher.artefacts.report import aggregate, passes
+    from rl_researcher.artefacts.report import aggregate, judge
 
     runs = summary.get("runs") or []
     names = [m.name for m in spec.metrics]
@@ -289,11 +289,9 @@ def findings_from_summary(summary: Dict[str, Any], spec: Any, *, artefact: str =
         for m in spec.metrics:
             mean, spread, n, diverged = per_metric.get(m.name, (float("nan"), float("nan"), 0, 0))
             reference = None
-            bar = m.bar
             if m.compare_to:
                 ref_stats = agg.get(m.compare_to, {}).get(m.name)
                 reference = None if ref_stats is None else ref_stats[0]
-                bar = reference
             out.append(Finding(
                 kind="registered",
                 date=date,
@@ -305,7 +303,9 @@ def findings_from_summary(summary: Dict[str, Any], spec: Any, *, artefact: str =
                 bar=m.bar, direction=m.direction,
                 compare_to=m.compare_to,
                 reference=None if reference is None else round(float(reference), 6),
-                passed=passes(m.direction, mean, bar, diverged=diverged),
+                # Judged through the same rule the report prints, and with the arm, so the
+                # reference of a comparison is not recorded as having failed to beat itself.
+                passed=judge(m, mean, diverged, reference=reference, arm=arm),
                 estimator=estimator,
                 commit=str(summary.get("git_sha", ""))[:12],
                 fingerprint=str(summary.get("fingerprint", "")),

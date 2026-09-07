@@ -42,12 +42,33 @@ def committed_on(path: Path) -> str:
     """
     import subprocess
 
-    try:
-        out = subprocess.run(["git", "log", "-1", "--format=%ad", "--date=short", "--", str(path)],
-                             capture_output=True, text=True, timeout=10, cwd=str(path.parent))
-        return out.stdout.strip()
-    except (OSError, subprocess.SubprocessError):
-        return ""
+    for target in _dated_candidates(path):
+        try:
+            # --follow through renames, and the *oldest* commit, not the newest. `git log -1`
+            # would date a finding by the day its file was last touched, so moving a finished
+            # run onto a new layout would redate every result it contains to the day of the
+            # move -- which is how a backfill quietly claims Phase 4 was measured this morning.
+            out = subprocess.run(
+                ["git", "log", "--follow", "--format=%ad", "--date=short", "--", str(target)],
+                capture_output=True, text=True, timeout=20, cwd=str(path.parent))
+        except (OSError, subprocess.SubprocessError):
+            return ""
+        stamps = [ln.strip() for ln in out.stdout.splitlines() if ln.strip()]
+        if stamps:
+            return stamps[-1]
+    return ""
+
+
+def _dated_candidates(summary: Path):
+    """The summary first, then the units under it.
+
+    A run that finished before this framework existed has no run-level summary until one is
+    derived from its units, and a file created this morning is dated this morning. The units
+    are the ones that were actually committed when the run happened, so they carry the date.
+    """
+    yield summary
+    for unit in sorted(summary.parent.glob("*/seed*/results.json")):
+        yield unit
 
 
 def backfill(config: Config, ledger: Ledger, *, dry_run: bool = False) -> List[Finding]:
