@@ -612,6 +612,72 @@ def queued_panel(data: DashboardData) -> str:
             f'<div class="queued">{chips}</div></div>')
 
 
+def _rung(spec: RunSpec, kind: RunKind, unit: UnitState) -> str:
+    """What one cell of the ladder says under its state chip.
+
+    Every branch answers the same question in the terms that state makes available: a finished
+    unit by its primary number, a failed one by its reason, a live one by where it is and when
+    it will be done, a queued one by how much work it is.
+    """
+    state, _tone = chip(unit)
+    if state == "failed":
+        return html.escape(str(unit.error or "no reason recorded").splitlines()[0][:70])
+    if state in ("done", "incomplete"):
+        primary = next((m.name for m in spec.metrics if m.bar is not None),
+                       spec.metrics[0].name if spec.metrics else "")
+        got = metrics_of(unit).get(primary)
+        bits = [f"{_title(kind, primary)} {charts.fmt(float(got))}"] if got is not None else []
+        if state == "incomplete":
+            bits.insert(0, f"{int(unit.step or 0):,}/{int(unit.max_steps or 0):,}")
+        bits.append(duration(unit.elapsed_seconds))
+        return html.escape(" · ".join(b for b in bits if b))
+    if state in ("running", "stale"):
+        bits = [f"{int(unit.step or 0):,}/{int(unit.max_steps or 0):,}"]
+        if unit.rate:
+            bits.append(f"{float(unit.rate):.1f}/s")
+        bits.append(f"quiet {duration(unit.age)}" if state == "stale"
+                    else f"eta {duration(unit.eta_seconds)}")
+        return html.escape(" · ".join(bits))
+    steps = int(unit.max_steps or spec.budget.max_steps or 0)
+    return html.escape(f"{steps:,} {getattr(kind, 'step_noun', 'step')}s")
+
+
+def ladder(spec: RunSpec, kind: RunKind, data: DashboardData) -> str:
+    """Every unit as a grid: one row per arm, one column per seed.
+
+    The shape of a run is the shape of the argument it makes, so a page can draw it that way
+    instead of as twelve rows of a table. A reader sees at a glance whether a whole arm is
+    missing -- which withholds a comparison -- or one seed of each, which does not.
+
+    Not in the default page: it says the same things the running, failed, queued and finished
+    tables say, more compactly and with less room for each. A kind names one or the other.
+    """
+    seeds = list(spec.seeds)
+    by_key = {(u.arm, int(u.seed)): u for u in data.units}
+    # Sized from the seed count rather than `auto-fit`, which let the columns fall below the
+    # width their contents need and clipped them. Below `min-width` the panel scrolls sideways,
+    # which is the honest failure: a number pushed off-screen is worse than one you scroll to.
+    cols = (f'grid-template-columns:minmax(112px,168px) '
+            f'repeat({len(seeds)},minmax(124px,1fr));'
+            f'min-width:{112 + 128 * len(seeds)}px')
+    head = "".join(f'<div class="lhead">seed {s}</div>' for s in seeds)
+    rows = [f'<div class="lrow" style="{cols}"><div class="lhead">arm</div>{head}</div>']
+    for arm in data.order:
+        cells = []
+        for seed in seeds:
+            unit = by_key.get((arm, int(seed)))
+            if unit is None:
+                continue
+            state, tone = chip(unit)
+            cells.append(f'<div class="lcell{" q" if state == "queued" else ""}">'
+                         f'<span class="chip t-{tone}">{html.escape(state)}</span>'
+                         f'<span class="lwhat">{_rung(spec, kind, unit)}</span></div>')
+        rows.append(f'<div class="lrow" style="{cols}"><div class="larm">'
+                    f'{charts.glyph(arm, list(data.order))}{html.escape(arm)}</div>'
+                    f'{"".join(cells)}</div>')
+    return (f'<div class="panel"><h2>ladder · {len(data.order)} arms × {len(seeds)} seeds</h2>'
+            f'<div class="ladder scroll">{"".join(rows)}</div></div>')
+
 def headline(spec: RunSpec, kind: RunKind, data: DashboardData) -> str:
     """The best finished unit, as chips rather than a sentence.
 
@@ -714,6 +780,7 @@ SECTIONS: Dict[str, Callable[[RunSpec, RunKind, DashboardData], str]] = {
     "queued": lambda spec, kind, data: queued_panel(data),
     "finished": lambda spec, kind, data: finished_table(spec, kind, data),
     "log": _section_log,
+    "ladder": ladder,
 }
 
 

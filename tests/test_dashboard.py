@@ -18,8 +18,9 @@ pytest.importorskip("matplotlib")
 pytestmark = [pytest.mark.tier1]
 
 from rl_researcher.artefacts.dashboard import (  # noqa: E402
-    DEFAULT_VOCAB, arm_table, bubble, chip, collect, curves_of, failed_panel, finished_table,
-    floors_of, format_log, headline, history_of, last_of, metric_rows, metrics_of, notes,
+    DEFAULT_SECTIONS, DEFAULT_VOCAB, _rung, arm_table, bubble, chip, collect, curves_of,
+    failed_panel, finished_table, floors_of, format_log, headline, history_of, ladder,
+    last_of, metric_rows, metrics_of, notes,
     page_foot, page_tiles, periodic_writer, pick_log, queued_panel, render, running_table,
     section, vocab_of, write_dashboard, write_page)
 from rl_researcher.kinds import LogVocab  # noqa: E402
@@ -651,3 +652,72 @@ def test_every_panel_renders_before_a_single_unit_has_started(toy):
     page = render(spec, kind, collect(spec, kind, out))
     assert "registered metrics" in page and "queued" in page
     assert "not started" in page
+
+
+# ── the ladder ────────────────────────────────────────────────────────────────────────────
+
+class _Ladder:
+    """A kind that draws the ladder instead of the four unit tables."""
+
+    name = "ladder"
+    page_sections = ("metrics", "ladder", "log")
+
+    def __init__(self, kind):
+        self.registry = kind.registry
+        self._kind = kind
+
+    def curves(self, spec):
+        return self._kind.curves(spec)
+
+
+def test_the_ladder_draws_every_registered_unit_including_the_unstarted(toy):
+    """The shape of a run is the shape of the argument it makes. A reader has to be able to
+    see that a whole arm is missing, which withholds a comparison, rather than one seed of
+    each, which does not."""
+    config, kind, spec, out = toy
+    _cell(out, "ols", 0, results=_done())
+    data = collect(spec, kind, out)
+    grid = ladder(spec, kind, data)
+    assert grid.count('class="lcell') == len(data.units) == 6
+    assert grid.count('class="lrow"') == 1 + len(data.order)     # a header row, then the arms
+    for seed in spec.seeds:
+        assert f"seed {seed}" in grid
+    assert "2 arms × 3 seeds" in grid
+
+
+def test_every_state_a_rung_can_be_in_says_something_different(toy):
+    config, kind, spec, out = toy
+    m = spec.metrics[0].name
+    _cell(out, "ols", 0, results=_done(**{m: 0.02}))
+    _cell(out, "ols", 1, progress=_beat(status="failed", error="RuntimeError: CUDA OOM\nline 2"))
+    _cell(out, "ols", 2, progress=_beat(step=90, rate=30.0, eta_seconds=3.6))
+    _cell(out, "noisy", 0, progress=_beat(updated="2020-01-01T00:00:00+00:00"))
+    data = collect(spec, kind, out)
+    rungs = {(u.arm, u.seed): _rung(spec, kind, u) for u in data.units}
+    assert "0.02" in rungs[("ols", 0)]
+    assert rungs[("ols", 1)] == "RuntimeError: CUDA OOM"        # the reason, first line only
+    assert "90/200" in rungs[("ols", 2)] and "30.0/s" in rungs[("ols", 2)]
+    assert "eta" in rungs[("ols", 2)]
+    assert "quiet" in rungs[("noisy", 0)]                       # not an eta: it stopped talking
+    assert "200 steps" in rungs[("noisy", 2)]                   # never started
+
+
+def test_the_ladder_is_not_on_a_page_that_did_not_ask_for_it(toy):
+    """It says what the four unit tables say, more compactly and with less room each. A kind
+    picks one or the other, and the default is the tables."""
+    config, kind, spec, out = toy
+    assert "ladder" not in DEFAULT_SECTIONS
+    data = collect(spec, kind, out)
+    assert "<h2>ladder" not in render(spec, kind, data)
+    page = render(spec, _Ladder(kind), data)
+    assert "<h2>ladder" in page and "<h2>queued" not in page
+
+
+def test_the_ladder_uses_the_kinds_own_word_for_a_step(toy):
+    config, kind, spec, out = toy
+
+    class Decisions(_Ladder):
+        step_noun = "decision"
+
+    data = collect(spec, kind, out)
+    assert "200 decisions" in ladder(spec, Decisions(kind), data)

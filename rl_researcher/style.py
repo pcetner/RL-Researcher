@@ -299,4 +299,18 @@ LEGACY_DASHBOARD_CSS = f"""  .tiles {{ display:grid; grid-template-columns:repea
     background:var(--muted) }}
   .foot {{ color:var(--muted); font-size:11.5px; margin-top:10px }}
   .foot code {{ background:var(--code); padding:1px 5px; border-radius:4px }}
+  /* the ladder: every unit as an arms-by-seeds grid, for a page that draws the shape of the
+     run rather than a list of its cells */
+  .ladder {{ padding:2px 14px 12px }}
+  .lrow {{ display:grid; gap:1px; align-items:stretch }}
+  .lrow + .lrow {{ margin-top:1px }}
+  .lhead {{ font-size:10.5px; text-transform:uppercase; letter-spacing:0.06em;
+    color:var(--muted); font-weight:600; padding:8px 2px }}
+  .larm {{ display:flex; align-items:center; gap:7px; font-size:12.5px; font-weight:600;
+    padding:9px 2px; min-width:0; overflow-wrap:anywhere }}
+  .lcell {{ background:var(--ground); border:1px solid var(--line); border-radius:8px;
+    padding:7px 9px; font-size:11.5px; font-variant-numeric:tabular-nums; min-width:0 }}
+  .lcell .lwhat {{ display:block; color:var(--muted); font-size:10.5px; margin-top:3px;
+    overflow-wrap:anywhere }}
+  .lcell.q {{ opacity:0.55 }}
 """
