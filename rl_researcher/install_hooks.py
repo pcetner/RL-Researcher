@@ -25,7 +25,7 @@ KEY = "core.hooksPath"
 
 def package_hooks() -> Path:
     """Where the shipped hooks live, whether this is a checkout or an installed package."""
-    return Path(__file__).resolve().parent.parent / HOOKS_DIR
+    return Path(__file__).resolve().parent / "hooks"
 
 
 def git(repo: Path, *args: str) -> subprocess.CompletedProcess:

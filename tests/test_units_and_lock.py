@@ -209,3 +209,43 @@ def test_a_stamp_is_parsed_before_it_is_printed_or_compared():
         assert stamp_of(junk) is None
     # ...and it orders by instant, not by digit.
     assert max(stamp_of(9_000_000_000.0), stamp_of(10_000_000_000.0)) == stamp_of(10_000_000_000.0)
+
+
+def test_the_claim_is_the_create_so_the_second_one_loses(tmp_path):
+    """Read-then-write leaves a window: two processes both see no lock and both take it, and
+    the directory then has two runs writing into it -- which is the one failure this file
+    exists to prevent. The create has to be what fails, so nothing has to be read first."""
+    from rl_researcher.lock import LOCK_NAME, _claim
+
+    path = tmp_path / LOCK_NAME
+    assert _claim(path, "first") is True
+    before = path.read_text(encoding="utf-8")
+    assert _claim(path, "second") is False
+    assert path.read_text(encoding="utf-8") == before, "the loser overwrote the winner's claim"
+
+
+def test_only_one_of_many_simultaneous_starts_gets_the_directory(tmp_path):
+    """The race itself, run: every thread claims at once and all but one must be refused."""
+    import threading
+
+    from rl_researcher.lock import RunLocked, acquire_lock
+
+    n = 8
+    ready = threading.Barrier(n)
+    won, refused = [], []
+
+    def start():
+        ready.wait()
+        try:
+            won.append(acquire_lock(tmp_path, "r", lambda _s: None))
+        except RunLocked:
+            refused.append(1)
+
+    threads = [threading.Thread(target=start) for _ in range(n)]
+    for th in threads:
+        th.start()
+    for th in threads:
+        th.join()
+
+    assert len(won) == 1, f"{len(won)} of {n} starts took the same output directory"
+    assert len(refused) == n - 1

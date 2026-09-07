@@ -16,14 +16,11 @@ from rl_researcher.cli import console, load_all, spec_parser
 
 
 def _staged_checks(stage, spec, kind, config, out) -> list:
-    """The checks registry is built in a later milestone; until it exists this is empty."""
-    try:
-        import importlib
+    """The registry's checks for a stage, with the project root the ones here need."""
+    from rl_researcher import checks
 
-        checks = importlib.import_module("rl_researcher.checks")
-    except ModuleNotFoundError:
-        return []
-    return list(checks.run_checks(stage, spec, kind, config, out=out))
+    root = getattr(config, "root", None) if config is not None else None
+    return list(checks.run_checks(stage, spec, kind, config, out=out, root=root))
 
 
 def write_digest(spec_path: Path, digest: str) -> str:

@@ -7,6 +7,10 @@ stylesheet it ships is the union of the CSS of exactly the blocks in that list.
 from rl_researcher.blocks.base import (BASE_CLASSES, Block, Page, chip, esc, fmt_duration,
                                        fmt_number, numbers_in, panel, rows_to_html, rows_to_md,
                                        tone_of)
+from rl_researcher.blocks.live import (ArmCell, ArmTable, DoneUnit, DoneUnits, Failure, Failures,
+                                       IndexEntry, IndexTable, Ladder, Lead, LiveUnit, LiveUnits,
+                                       LogLine, MetricLane, MetricLanes,
+                                       QueuedUnits, PageFoot, RunLog)
 from rl_researcher.blocks.tables import Grid, LogTail, MetricRow, MetricsTable, UnitsTable
 from rl_researcher.blocks.text import (Banner, Claims, Figure, Footer, Gallery, Header, KV,
                                        Notices, Prose, Provenance, Stub)
@@ -14,8 +18,9 @@ from rl_researcher.blocks.viz import Curve, Curves, Lane, Mark, Progress, Scorec
 
 #: Every concrete block, for the tests that hold all of them to the same rules.
 ALL_BLOCKS = (
-    Banner, Claims, Curves, Figure, Footer, Gallery, Grid, Header, KV, LogTail, MetricsTable,
-    Notices, Progress, Prose, Scorecard, Stub, Tiles, UnitsTable,
+    ArmTable, Banner, Claims, Curves, DoneUnits, Failures, Figure, Footer, Gallery, Grid, Header,
+    IndexTable, KV, Ladder, Lead, LiveUnits, LogTail, MetricLanes, MetricsTable, Notices,
+    PageFoot, Progress, Prose, QueuedUnits, RunLog, Scorecard, Stub, Tiles, UnitsTable,
 )
 
 __all__ = [
@@ -24,4 +29,8 @@ __all__ = [
     "Banner", "Claims", "Curve", "Curves", "Figure", "Footer", "Gallery", "Grid", "Header", "KV",
     "Lane", "LogTail", "Mark", "MetricRow", "MetricsTable", "Notices", "Progress", "Prose",
     "Provenance", "Scorecard", "Stub", "Tiles", "UnitsTable",
+    # the live page
+    "ArmCell", "ArmTable", "DoneUnit", "DoneUnits", "Failure", "Failures", "IndexEntry",
+    "IndexTable", "Ladder", "Lead", "LiveUnit", "LiveUnits", "MetricLane", "MetricLanes",
+    "LogLine", "PageFoot", "QueuedUnits", "RunLog",
 ]

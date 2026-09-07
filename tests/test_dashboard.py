@@ -18,13 +18,25 @@ pytest.importorskip("matplotlib")
 pytestmark = [pytest.mark.tier1]
 
 from rl_researcher.artefacts.dashboard import (  # noqa: E402
-    DEFAULT_SECTIONS, DEFAULT_VOCAB, _rung, arm_table, bubble, chip, collect, curves_of,
-    failed_panel, finished_table, floors_of, format_log, headline, history_of, ladder,
-    last_of, metric_rows, metrics_of, notes,
-    page_foot, page_tiles, periodic_writer, pick_log, queued_panel, render, running_table,
-    section, vocab_of, write_dashboard, write_page)
+    DEFAULT_SECTIONS, DEFAULT_VOCAB, _notes, _rung, arm_panel, chip, collect, curves_of, done_panel,
+    failed_panel, floors_of, history_of, ladder, last_of, lead_panel, live_panel, log_lines,
+    metric_lanes, metrics_of, page_foot, page_tiles, periodic_writer, pick_log,
+    queued_panel, render, section, vocab_of, write_dashboard, write_page)
 from rl_researcher.kinds import LogVocab  # noqa: E402
 from rl_researcher.units import unit_dir  # noqa: E402
+
+
+def _html(blocks) -> str:
+    """A panel's HTML. The panels return blocks now; what the assertions here are about
+    is still what reaches the page."""
+    return "".join(b.html() for b in (blocks or []))
+
+
+def _log(lines, vocab, order=None) -> str:
+    """The log tail as it reaches the page."""
+    from rl_researcher.blocks import RunLog
+
+    return RunLog(lines=tuple(log_lines(lines, vocab, order))).html()
 
 
 def _cell(out, arm, seed, **files):
@@ -167,19 +179,19 @@ def test_the_log_never_loses_a_completion_to_a_burst_of_progress():
 
 
 def test_the_log_is_coloured_by_what_each_line_says():
-    out = format_log(["12:00:00 FAILED: RuntimeError: boom",
-                      "12:00:01 complete after 200 steps",
-                      "12:00:02 hot-stopped at step 60",
-                      "12:00:03 nothing notable here"], DEFAULT_VOCAB)
+    out = _log(["12:00:00 FAILED: RuntimeError: boom",
+                "12:00:01 complete after 200 steps",
+                "12:00:02 hot-stopped at step 60",
+                "12:00:03 nothing notable here"], DEFAULT_VOCAB)
     assert 'class="ln crit"' in out and 'class="ln ok"' in out and 'class="ln warn"' in out
     assert 'class="ln "' in out                       # the unremarkable line gets no tone
     assert 'class="ts">12:00:00<' in out              # and every timestamp is dimmed
-    assert format_log([], DEFAULT_VOCAB) == '<div class="ln of">no log yet</div>'
+    assert '<div class="ln of">no log yet</div>' in _log([], DEFAULT_VOCAB)
 
 
 def test_a_step_line_is_broken_into_columns_and_coloured_by_its_unit():
-    out = format_log(["12:00:00 [ols seed 0] step 1,200/10,000 loss 0.42"], DEFAULT_VOCAB,
-                     order=["ols", "noisy"])
+    out = _log(["12:00:00 [ols seed 0] step 1,200/10,000 loss 0.42"], DEFAULT_VOCAB,
+               order=["ols", "noisy"])
     assert 'class="ln step"' in out
     assert 'class="stepn">1,200<' in out and 'class="of">/10,000<' in out
     assert "loss 0.42" in out and "color:#" in out
@@ -191,7 +203,7 @@ def test_a_kind_that_names_its_own_step_line_gets_it_parsed(toy):
     vocab = LogVocab(marks={"FAILED": "crit"},
                      step_line=r"^(?P<ts>\d\d:\d\d:\d\d)\s+\[(?P<unit>[^\]]+)\]\s+decision\s+"
                                r"(?P<step>[\d,]+)/(?P<max>[\d,]+)\s+(?P<rest>.*?)\s*$")
-    out = format_log(["12:00:00 [planner seed 0] decision 40/1,000 coverage 3 cells"], vocab)
+    out = _log(["12:00:00 [planner seed 0] decision 40/1,000 coverage 3 cells"], vocab)
     assert 'class="ln step"' in out and 'class="stepn">40<' in out and "coverage 3 cells" in out
 
 
@@ -286,7 +298,7 @@ def test_the_scorecard_exists_before_anything_finishes(toy):
     """A panel that does not exist yet cannot tell a reader what is being measured."""
     config, kind, spec, out = toy
     data = collect(spec, kind, out)
-    rows = metric_rows(spec, kind, data.with_metrics(), data.order)
+    rows = _html(metric_lanes(spec, kind, data))
     for m in spec.metrics:
         assert kind.registry.title(m.name) in rows
     assert 'class="mrow"' in rows and rows.count('class="mrow"') == len(spec.metrics)
@@ -297,7 +309,7 @@ def test_a_metric_carries_its_definition_and_the_specs_own_reason(toy):
     is invented for the page."""
     config, kind, spec, out = toy
     m = spec.metrics[0]
-    got = bubble(kind, m)
+    got = _html(metric_lanes(spec, kind, collect(spec, kind, out)))
     assert kind.registry.description(m.name)[:40] in got
     if m.why:
         assert m.why[:40] in got
@@ -311,10 +323,10 @@ def test_a_kind_with_no_registry_still_renders_a_panel(toy):
     class Bare:
         pass
 
-    got = bubble(Bare(), spec.metrics[0])
+    got = _html(metric_lanes(spec, Bare(), collect(spec, kind, out)))
     assert spec.metrics[0].name in got            # falls back to the metric's own name
     data = collect(spec, kind, out)
-    assert metric_rows(spec, Bare(), data.with_metrics(), data.order)
+    assert _html(metric_lanes(spec, Bare(), data))
 
 
 def test_a_diverged_value_is_counted_rather_than_averaged_in(toy):
@@ -325,7 +337,7 @@ def test_a_diverged_value_is_counted_rather_than_averaged_in(toy):
     _cell(out, "ols", 0, results={**_done(**{name: 0.5})})
     _cell(out, "ols", 1, results={**_done(**{name: float("inf")})})
     data = collect(spec, kind, out)
-    rows = metric_rows(spec, kind, data.with_metrics(), data.order)
+    rows = _html(metric_lanes(spec, kind, data))
     assert "1 diverged" in rows
     assert "9.2e" not in rows and "inf" not in rows.replace("infinity", "")
 
@@ -338,11 +350,11 @@ def test_the_arm_table_crowns_a_best_only_when_there_is_something_to_compare(toy
     assert len(bars) > 1, "this needs more than one judged column to be worth running"
     _cell(out, "ols", 0, results=_done(slope_error=0.01, r2=0.99))
     data, agg = _agg_of(spec, kind, out)
-    assert "crown" not in arm_table(spec, kind, agg, data.order)
+    assert "crown" not in _html(arm_panel(spec, kind, data))
 
     _cell(out, "noisy", 0, results={**_done(slope_error=0.9, r2=0.10), "arm": "noisy"})
     data, agg = _agg_of(spec, kind, out)
-    table = arm_table(spec, kind, agg, data.order)
+    table = _html(arm_panel(spec, kind, data))
     assert table.count("crown") == len(bars), table
     # ...and the crown went to the arm that actually won, in each direction.
     ols = next(r for r in table.split("<tr>") if ">ols<" in r)
@@ -358,7 +370,7 @@ def test_an_arm_with_a_diverged_seed_never_wins_a_column(toy):
     _cell(out, "noisy", 0, results={**_done(**{name: 0.5}), "arm": "noisy"})
     _cell(out, "noisy", 1, results={**_done(**{name: 0.6}), "arm": "noisy"})
     data, agg = _agg_of(spec, kind, out)
-    table = arm_table(spec, kind, agg, data.order)
+    table = _html(arm_panel(spec, kind, data))
     assert "diverged" in table
     rows = table.split("<tr>")
     ols = next(r for r in rows if ">ols<" in r)
@@ -367,16 +379,14 @@ def test_an_arm_with_a_diverged_seed_never_wins_a_column(toy):
 
 def test_the_reference_arm_of_a_comparison_is_not_marked_against_itself(toy):
     """A cross printed against a number that was never on trial."""
-    from rl_researcher.artefacts.report import aggregate
 
     config, kind, spec, out = toy
     m = spec.metrics[0]
-    object.__setattr__(m, "bar", None) if False else None
     m.compare_to = "noisy"
     m.bar = 0.5
-    agg = aggregate([{"arm": a, "metrics": {m.name: 0.4}} for a in ("ols", "noisy")],
-                    [m.name for m in spec.metrics])
-    table = arm_table(spec, kind, agg, ["ols", "noisy"])
+    for arm in ("ols", "noisy"):
+        _cell(out, arm, 0, results={**_done(**{m.name: 0.4}), "arm": arm})
+    table = _html(arm_panel(spec, kind, collect(spec, kind, out)))
     noisy = next(r for r in table.split("<tr>") if ">noisy<" in r)
     assert "✗" not in noisy and "✓" not in noisy
 
@@ -388,19 +398,19 @@ def test_a_failed_unit_gets_its_own_panel_and_leaves_in_progress(toy):
     _cell(out, "ols", 0, progress=_beat(status="failed", error="RuntimeError: CUDA out of memory"))
     _cell(out, "ols", 1, progress=_beat())
     data = collect(spec, kind, out)
-    fails = failed_panel(data)
+    fails = _html(failed_panel(data))
     assert "CUDA out of memory" in fails and "1 unit" in fails
-    running = running_table(spec, kind, data)
+    running = _html(live_panel(spec, kind, data))
     assert "CUDA out of memory" not in running
     assert ">ols<" in running                                  # the live one is still there
-    assert failed_panel(collect(spec, kind, out.parent / "empty")) == ""
+    assert _html(failed_panel(collect(spec, kind, out.parent / "empty"))) == ""
 
 
 def test_queued_units_get_their_own_box(toy):
     config, kind, spec, out = toy
     _cell(out, "ols", 0, results=_done())
     data = collect(spec, kind, out)
-    panel = queued_panel(data)
+    panel = _html(queued_panel(data))
     assert "queued · 5" in panel and panel.count("qchip") == 5
 
 
@@ -410,7 +420,7 @@ def test_finished_units_are_ordered_best_first(toy):
     _cell(out, "ols", 0, results=_done(**{m.name: 0.9}))
     _cell(out, "ols", 1, results=_done(**{m.name: 0.01}))
     data = collect(spec, kind, out)
-    table = finished_table(spec, kind, data)
+    table = _html(done_panel(spec, kind, data))
     assert "bestrow" in table
     rows = [r for r in table.split("<tr") if 'class="cell"' in r]   # [1] is the header row
     better = "0.01" if m.direction == "lower" else "0.9"
@@ -425,7 +435,7 @@ def test_the_curve_columns_are_the_ones_the_kind_declares(toy):
     assert declared, "the toy kind declares no curves, so this test proves nothing"
     _cell(out, "ols", 0, results=_done())
     data = collect(spec, kind, out)
-    table = finished_table(spec, kind, data)
+    table = _html(done_panel(spec, kind, data))
     for c in declared:
         assert c.title in table
 
@@ -447,7 +457,7 @@ def test_a_kind_whose_curves_raise_still_renders(toy):
             raise RuntimeError("nope")
 
     assert curves_of(spec, Angry()) == []
-    assert finished_table(spec, Angry(), data)          # a table, just without curve columns
+    assert _html(done_panel(spec, Angry(), data))          # a table, just without curve columns
 
 
 def test_the_headline_reports_the_floor_alongside_the_win(toy):
@@ -456,7 +466,7 @@ def test_the_headline_reports_the_floor_alongside_the_win(toy):
     config, kind, spec, out = toy
     _cell(out, "ols", 0, results=_done())
     data = collect(spec, kind, out)
-    head = headline(spec, kind, data)
+    head = _html(lead_panel(spec, kind, data))
     assert "Current best" in head and "ols" in head
     assert 'class="stat' in head
 
@@ -464,7 +474,7 @@ def test_the_headline_reports_the_floor_alongside_the_win(toy):
 def test_no_headline_before_anything_finishes(toy):
     config, kind, spec, out = toy
     _cell(out, "ols", 0, progress=_beat())
-    assert headline(spec, kind, collect(spec, kind, out)) == ""
+    assert _html(lead_panel(spec, kind, collect(spec, kind, out))) == ""
 
 
 def test_a_diverged_unit_is_never_crowned_the_headline(toy):
@@ -472,17 +482,17 @@ def test_a_diverged_unit_is_never_crowned_the_headline(toy):
     config, kind, spec, out = toy
     m = spec.metrics[0]
     _cell(out, "ols", 0, results=_done(**{m.name: float("inf")}))
-    assert headline(spec, kind, collect(spec, kind, out)) == ""
+    assert _html(lead_panel(spec, kind, collect(spec, kind, out))) == ""
     _cell(out, "ols", 1, results=_done(**{m.name: 0.02}))
-    assert "seed 1" in headline(spec, kind, collect(spec, kind, out))
+    assert "seed 1" in _html(lead_panel(spec, kind, collect(spec, kind, out)))
 
 
 def test_a_resumable_or_failed_unit_says_so_in_its_notes(toy):
     config, kind, spec, out = toy
     _cell(out, "ols", 0, progress=_beat(step=500), checkpoint={"step": 500})
     u = next(u for u in collect(spec, kind, out).units if u.arm == "ols" and u.seed == 0)
-    assert "resumable from 500" in notes(u)
-    assert "updated" in notes(u)
+    assert any("resumable from 500" in n for n in _notes(u))
+    assert any("updated" in n for n in _notes(u))
 
 
 def test_nothing_a_panel_writes_reaches_the_network(toy):
@@ -492,15 +502,14 @@ def test_nothing_a_panel_writes_reaches_the_network(toy):
     _cell(out, "ols", 0, results=_done())
     _cell(out, "ols", 1, progress=_beat())
     data = collect(spec, kind, out)
-    _d, agg = _agg_of(spec, kind, out)
     whole = "".join([
-        headline(spec, kind, data),
-        metric_rows(spec, kind, data.with_metrics(), data.order),
-        arm_table(spec, kind, agg, data.order),
-        running_table(spec, kind, data),
-        finished_table(spec, kind, data),
-        failed_panel(data), queued_panel(data),
-        format_log(data.log_tail, vocab_of(kind), data.order),
+        _html(lead_panel(spec, kind, data)),
+        _html(metric_lanes(spec, kind, data)),
+        _html(arm_panel(spec, kind, data)),
+        _html(live_panel(spec, kind, data)),
+        _html(done_panel(spec, kind, data)),
+        _html(failed_panel(data)), _html(queued_panel(data)),
+        _log(data.log_tail, vocab_of(kind), data.order),
     ])
     for bad in ("http://", "https://", "//fonts.", "<script src", "@import"):
         assert bad not in whole, bad
@@ -536,19 +545,22 @@ def test_a_kind_contributes_a_panel_of_its_own_without_a_second_page(toy):
     _cell(out, "ols", 0, results=_done())
     data = collect(spec, kind, out)
 
+    from rl_researcher.blocks import Prose
+
     class Extra:
         name = "extra"
         registry = kind.registry
         page_sections = ("ladder", "log")
-        page_extras = {"ladder": lambda spec, kind, data:
-                       f'<div class="panel">rungs: {len(data.units)}</div>'}
 
         def curves(self, spec):
             return []
 
+        def blocks(self, spec, summary, out, view):
+            return [Prose(text=f"rungs: {len(spec.seeds)}")] if view == "ladder" else []
+
     page = render(spec, Extra(), data)
-    assert "rungs: 6" in page
-    assert page.index("rungs:") < page.index("<h2>log")
+    assert f"rungs: {len(spec.seeds)}" in page
+    assert page.index("rungs:") < page.index(">log<")
 
 
 def test_a_section_name_nothing_defines_renders_as_nothing(toy):
@@ -556,7 +568,7 @@ def test_a_section_name_nothing_defines_renders_as_nothing(toy):
     be the second thing to break."""
     config, kind, spec, out = toy
     data = collect(spec, kind, out)
-    assert section("no-such-panel", spec, kind, data) == ""
+    assert _html(section("no-such-panel", spec, kind, data)) == ""
 
     class Typo:
         name = "typo"
@@ -575,7 +587,7 @@ def test_the_tiles_count_in_the_kinds_own_nouns(toy):
     config, kind, spec, out = toy
     _cell(out, "ols", 0, results=_done())
     data = collect(spec, kind, out)
-    assert "units done" in page_tiles(spec, kind, data)
+    assert "units done" in page_tiles(spec, kind, data).html()
 
     class Loopish:
         name = "loop"
@@ -583,7 +595,7 @@ def test_the_tiles_count_in_the_kinds_own_nouns(toy):
         unit_noun = "arm"
         step_noun = "decision"
 
-    got = page_tiles(spec, Loopish(), data)
+    got = page_tiles(spec, Loopish(), data).html()
     assert "arms done" in got and "decisions" in got and "steps" not in got
 
 
@@ -598,11 +610,11 @@ def test_the_foot_says_what_the_kind_wants_it_to_and_points_at_status(toy):
         def page_note(self, spec, data):
             return "snapshot <code>abc123def456</code>"
 
-    foot = page_foot(spec, Pinned(), data, refresh=True)
+    foot = page_foot(spec, Pinned(), data, refresh=True).html()
     assert "abc123def456" in foot
     assert "<code>status</code>" in foot               # the page is not the authority on liveness
     assert "refreshing every" in foot
-    assert "rendered once" in page_foot(spec, kind, data, refresh=False)
+    assert "rendered once" in page_foot(spec, kind, data, refresh=False).html()
 
 
 def test_a_page_rendered_after_the_run_does_not_reload_itself(toy):
@@ -633,7 +645,8 @@ def test_a_finished_run_has_nothing_left_rather_than_an_unknown_amount(toy):
     for u in kind.units(spec):
         _cell(out, *u.split("/seed"), results=_done())
     assert collect(spec, kind, out).eta_all == 0.0
-    assert "0s</b><span>projected left" in page_tiles(spec, kind, collect(spec, kind, out))
+    assert "0s</b><span>projected left" in page_tiles(spec, kind,
+                                                      collect(spec, kind, out)).html()
 
 
 def test_the_whole_page_fetches_nothing(toy):
@@ -700,7 +713,7 @@ def test_the_ladder_draws_every_registered_unit_including_the_unstarted(toy):
     config, kind, spec, out = toy
     _cell(out, "ols", 0, results=_done())
     data = collect(spec, kind, out)
-    grid = ladder(spec, kind, data)
+    grid = _html(ladder(spec, kind, data))
     assert grid.count('class="lcell') == len(data.units) == 6
     assert grid.count('class="lrow"') == 1 + len(data.order)     # a header row, then the arms
     for seed in spec.seeds:
@@ -743,7 +756,7 @@ def test_the_ladder_uses_the_kinds_own_word_for_a_step(toy):
         step_noun = "decision"
 
     data = collect(spec, kind, out)
-    assert "200 decisions" in ladder(spec, Decisions(kind), data)
+    assert "200 decisions" in _html(ladder(spec, Decisions(kind), data))
 
 
 def test_every_arms_value_reaches_the_arm_table_including_the_unmarked_ones(toy):
@@ -755,16 +768,14 @@ def test_every_arms_value_reaches_the_arm_table_including_the_unmarked_ones(toy)
     which hid the compare-to reference — the number every other arm on that row is judged
     against.
     """
-    from rl_researcher.artefacts.report import aggregate
 
     config, kind, spec, out = toy
     m = spec.metrics[0]
     m.compare_to, m.bar = "noisy", None
     names = [x.name for x in spec.metrics]
-    agg = aggregate([{"arm": a, "status": "complete",
-                      "metrics": dict.fromkeys(names, v) | {m.name: v}}
-                     for a, v in (("ols", 0.14), ("noisy", 0.90))], names)
-    table = arm_table(spec, kind, agg, ["ols", "noisy"])
+    for arm, v in (("ols", 0.14), ("noisy", 0.90)):
+        _cell(out, arm, 0, results={**_done(**dict.fromkeys(names, v)), "arm": arm})
+    table = _html(arm_panel(spec, kind, collect(spec, kind, out)))
     for text in ("0.14", "0.9"):
         assert text in table, f"{text} never reaches the table"
     assert ">ols<" in table and ">noisy<" in table    # the reference arm has a row of its own

@@ -102,6 +102,7 @@ def _provenance(spec: Any, payload: Dict[str, Any], kind: Any) -> List[Tuple[str
     pairs: List[Tuple[str, str]] = [
         ("Measured", str(payload.get("measured", "") or "—")),
         ("Commit", str(payload.get("git_sha", "unknown"))[:12]),
+        ("Framework", str(payload.get("rl_researcher") or "unknown")),
     ]
     if payload.get("snapshot"):
         pairs.append(("Snapshot", str(payload["snapshot"])))

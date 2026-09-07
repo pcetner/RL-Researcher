@@ -1,8 +1,8 @@
 """The checks: one question each, asked at the stage where the answer can still change a plan.
 
 Every check here is a lesson that cost this project something. The lesson is named on the check,
-and `docs/lessons.md` names the check back, so neither list can drift from the other without a
-test noticing — that is what C11 is for.
+and `rl_researcher/lessons.md` names the check back, so neither list can drift from the other
+without a test noticing — that is what C11 is for.
 
 A check is not a gate on quality. It is a gate on the small number of things that make a run
 *worthless*: a bar nothing can reach, a comparison nothing can win, one seed read as a
@@ -61,7 +61,7 @@ CheckFn = Callable[[Context], Iterable[Finding]]
 class Check:
     id: str
     stage: str
-    lesson: str          # the id in docs/lessons.md this exists because of
+    lesson: str          # the id in rl_researcher/lessons.md this exists because of
     what: str            # one line, in the terms a person would use
     fn: CheckFn
 
@@ -205,11 +205,12 @@ def c05_seeds(ctx: Context) -> Iterable[Finding]:
         return []
     if not getattr(ctx.kind, "compares_seeds", True):
         return []                       # deterministic given its data; there is no spread
-    want = 1 if getattr(ctx.spec, "screening", False) else 3
+    screening_seeds = int(getattr(getattr(ctx.config, "gate", None), "screening_seeds", 1) or 1)
+    want = screening_seeds if getattr(ctx.spec, "screening", False) else 3
     n = len(ctx.spec.seeds)
     if getattr(ctx.spec, "screening", False):
-        return ([] if n >= 1 else
-                [_err("C05", "a screening pass still needs a seed")])
+        return ([] if n >= want else
+                [_err("C05", f"a screening pass still needs {want} seed(s); this has {n}")])
     if n < want:
         return [_err("C05", f"{n} seed(s) and `screening` is not set. One seed read as a "
                             f"difference is the commonest way a study says nothing; declare "
@@ -400,8 +401,16 @@ INVARIANTS_MARK = "<!-- invariants -->"
 def c10_invariants_agree(ctx: Context) -> Iterable[Finding]:
     """Four skills, one set of hard rules. Four copies of a rule is four rules, and the one
     that drifts is the one being read when it matters."""
+    found = _skill_files(ctx)
+    if not found:
+        # An empty set compares equal to itself, so this used to pass loudest of all: installed
+        # from a wheel that shipped no skills, the one check saying four copies of a rule had
+        # not drifted was answering a question it had never asked.
+        return [_err("C10", "no shipped skill files found, so nothing checked that the four "
+                            "invariants blocks still agree. They ship inside the package; a "
+                            "tree or an install without them cannot ask this")]
     blocks = {}
-    for path in _skill_files(ctx):
+    for path in found:
         text = path.read_text(encoding="utf-8", errors="replace")
         parts = text.split(INVARIANTS_MARK)
         # Keyed by the directory, because every one of these files is called SKILL.md — keying
@@ -517,7 +526,7 @@ def _metric_names(text: str) -> List[str]:
 def _lessons_file(ctx: Context) -> Optional[Path]:
     """The lessons the registry's ids point into: the package's, or a project's if it has one
     that carries them."""
-    here = Path(__file__).resolve().parent.parent / "docs" / "lessons.md"
+    here = Path(__file__).resolve().parent / "lessons.md"
     if here.is_file():
         return here
     got = ctx.path("lessons") if ctx.config is not None else None
@@ -533,7 +542,7 @@ SHIPPED_PREFIX = "rl-"
 def _skill_files(ctx: Context) -> List[Path]:
     """Every copy of a shipped skill this project can see: its own, its installed ones, and the
     package's. All of them, because the one being read is whichever is installed."""
-    roots = [Path(__file__).resolve().parent.parent / "skills"]
+    roots = [Path(__file__).resolve().parent / "skills"]
     if ctx.root:
         roots = [Path(ctx.root) / "skills", Path(ctx.root) / ".claude" / "skills"] + roots
     found: List[Path] = []

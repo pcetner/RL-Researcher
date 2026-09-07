@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "rl-researcher"
-version = "0.1.0"
+version = "0.2.0"
 description = "Tooling for LLM-run, human-gated research: pre-registered runs, generated artefacts, a findings ledger, a cost gate"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -32,10 +32,22 @@ where = ["."]
 include = ["rl_researcher*"]
 
 [tool.setuptools.package-data]
-rl_researcher = ["py.typed", "*.ps1", "examples/toy/*.toml"]
+# The skills, the pre-commit hook and the lessons are the package's own assets, not
+# documentation about it: `install_skills`, `install_hooks`, C10 and C11 all read them at
+# runtime. Kept beside the package they were in the repository and in no wheel built from it,
+# which is invisible from a checkout and total from an install.
+rl_researcher = ["py.typed", "*.ps1", "lessons.md", "skills/*/SKILL.md", "hooks/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# The repository root on `sys.path`, so `pytest` and `python -m pytest` agree.
+#
+# Two test kinds are registered the way a consuming project registers one, by import path --
+# `tests.test_index:OtherKind` and `tests.test_measurement:Counting` -- which is the point of
+# them: the framework has to load a kind it has never heard of. `python -m pytest` puts the
+# working directory on the path and bare `pytest` does not, so those entries resolved locally
+# and not in CI, and CI had never once passed.
+pythonpath = ["."]
 addopts = "-ra -p no:cacheprovider"
 timeout = 120
 markers = [

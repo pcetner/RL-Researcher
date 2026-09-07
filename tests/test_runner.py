@@ -326,3 +326,50 @@ def test_a_finished_run_rebuilds_its_summary_without_preparing_again(toy, monkey
     (unit_dir(out, "ols/seed0") / "results.json").unlink()
     run(spec, kind, out, config=config)
     assert calls == [1]
+
+
+def test_a_run_stage_check_is_asked_at_the_launch_it_is_named_for(toy, monkeypatch):
+    """`run` asked only the `check` stage, so the two checks registered at `run` -- C06 and
+    C09, the one that says the canary still passes before an expensive run -- were asked by
+    `lint` and by the git hook and never at a launch, which is the moment they are named for.
+    """
+    from rl_researcher.checks import REGISTRY, Check
+    from rl_researcher.kinds import Finding
+
+    seen = {}
+
+    def ask(ctx):
+        seen["out"] = ctx.out
+        seen["root"] = ctx.root
+        return [Finding("CXX", "warn", "asked at the launch")]
+
+    monkeypatch.setitem(REGISTRY, "CXX",
+                        Check(id="CXX", stage="run", lesson="L000", what="a test", fn=ask))
+    config, kind, spec, out = toy
+    lines = []
+    run(spec, kind, out, config=config, log=lines.append, max_seconds=0)
+
+    assert seen, "a run-stage check was never asked by the runner"
+    assert seen["out"] == out, "asked without the run's own output directory"
+    assert seen["root"] is not None, "asked without the project root"
+    assert any("asked at the launch" in ln for ln in lines)
+
+
+def test_every_way_past_the_human_is_written_into_the_run_log(toy, monkeypatch):
+    """`--no-check` logged its waiver; the two flags that skip the *human* did not.
+
+    A gate walked past and a guard waived leave the same numbers on disk as a run that cleared
+    both. The log is the only place that can say which happened.
+    """
+    from rl_researcher.kinds import Guard
+
+    config, kind, spec, out = toy
+    monkeypatch.setattr(type(kind), "guards", lambda self, s: [
+        Guard(name="engine", is_blocked=lambda: True, message="the engine holds the GPU")])
+
+    lines = []
+    run(spec, kind, out, config=config, log=lines.append, allow_guards=True, max_seconds=0)
+    text = "\n".join(lines)
+    assert "no cost gate" in text, "a run with no gate said nothing about it"
+    assert "engine" in text and "the engine holds the GPU" in text, \
+        "a blocked guard was waived silently"
