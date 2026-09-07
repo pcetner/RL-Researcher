@@ -153,3 +153,38 @@ def test_clearing_removes_every_checkpoint_file(tmp_path):
         (cell / name).write_text("x", encoding="utf-8")
     clear_checkpoint(cell)
     assert not list(cell.glob("checkpoint.*"))
+
+
+def test_the_age_parser_reads_both_stamp_forms_and_refuses_the_ambiguous_one():
+    """Two forms are readable, one is written, and the dispatch is on type.
+
+    Runs from before the ISO rule carry a `time.time()` float and those files are still
+    evidence, so both parse. But an epoch stamped as a JSON *string* is a parse failure, not a
+    heartbeat: reading it as a number would report a live run as decades stale, and the reverse
+    mistake would report a dead one as fresh.
+    """
+    import time
+    from datetime import datetime, timedelta, timezone
+
+    from rl_researcher.units import age_of
+
+    now = datetime.now(timezone.utc)
+    assert age_of(None) is None
+    assert 0 <= (age_of(time.time() - 30) or -1) < 40                 # epoch float
+    assert 0 <= (age_of(int(time.time()) - 30) or -1) < 40            # epoch int
+    assert 25 < (age_of((now - timedelta(seconds=30)).isoformat()) or 0) < 40   # ISO with a zone
+    naive = (now - timedelta(seconds=30)).replace(tzinfo=None).isoformat()
+    assert 25 < (age_of(naive) or 0) < 40, "a stamp with no zone is read as UTC, not discarded"
+
+    assert age_of("1788748565.16") is None, "an epoch in a string is unreadable, not ancient"
+    assert age_of("not a date") is None
+    assert age_of(True) is None, "bool is an int; `updated: true` is a confused writer"
+    assert age_of({"updated": 1}) is None
+
+
+def test_a_heartbeat_is_never_reported_as_being_from_the_future():
+    import time
+
+    from rl_researcher.units import age_of
+
+    assert age_of(time.time() + 3600) == 0.0

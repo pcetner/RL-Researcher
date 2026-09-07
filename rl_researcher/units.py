@@ -52,13 +52,32 @@ def stamp_now() -> str:
 
 
 def age_of(updated: Any) -> Optional[float]:
-    """Seconds since a heartbeat's ``updated`` field; ``None`` if it cannot be read."""
-    if updated is None:
+    """Seconds since a heartbeat's ``updated`` field; ``None`` if it cannot be read.
+
+    Two forms are readable and only one is written. New heartbeats carry an ISO-8601 UTC string;
+    runs from before that rule carry a ``time.time()`` float, and those files are still evidence.
+
+    The dispatch is on Python type, never on which parse happens to succeed first. An epoch
+    stamped as a JSON *string* is a parse failure, not a heartbeat from 1970 or from fifty years
+    hence: reading it as a number would report a live run as decades stale, and reading a real
+    number as a string would do the reverse. ``bool`` is excluded because it is an ``int``, and
+    ``updated: true`` means a writer got confused, not that the unit beat one second after the
+    epoch.
+    """
+    if updated is None or isinstance(updated, bool):
         return None
     try:
         if isinstance(updated, (int, float)):
             return max(0.0, time.time() - float(updated))
-        return max(0.0, (datetime.now(timezone.utc) - datetime.fromisoformat(str(updated))).total_seconds())
+        if not isinstance(updated, str):
+            return None
+        stamp = datetime.fromisoformat(updated)
+        if stamp.tzinfo is None:
+            # A stamp with no zone is read as UTC, which is what every writer here emits.
+            # Returning None instead would make a slightly-off file indistinguishable from a
+            # unit that has never beaten at all, which is the one state that must stay loud.
+            stamp = stamp.replace(tzinfo=timezone.utc)
+        return max(0.0, (datetime.now(timezone.utc) - stamp).total_seconds())
     except (ValueError, TypeError, OverflowError):
         return None
 
@@ -140,9 +159,16 @@ class UnitState:
         return d
 
 
-def read_unit(cell: Path, *, unit: str, heartbeat_seconds: float) -> UnitState:
+def read_unit(cell: Path, *, unit: str, heartbeat_seconds: float,
+              normalise: Optional[Any] = None) -> UnitState:
     """The state of the unit in ``cell``. A result on disk beats the heartbeat (the result is
-    the proof); a failure marker beats staleness; a checkpoint without a result is resumable."""
+    the proof); a failure marker beats staleness; a checkpoint without a result is resumable.
+
+    ``normalise`` is the kind's ``read_result``, given a result dict and returning one in the
+    framework's shape. A project whose finished runs predate this contract has files that are
+    still evidence and must not be rewritten to suit a newer tool, so the kind that understands
+    them translates on read instead.
+    """
     arm, seed = parse_unit(unit)
     st = UnitState(unit=unit, arm=arm, seed=seed)
     from rl_researcher.checkpoint import read_sidecar  # local import: checkpoint imports units
@@ -151,6 +177,11 @@ def read_unit(cell: Path, *, unit: str, heartbeat_seconds: float) -> UnitState:
     if side is not None:
         st.checkpoint_step = int(side.get("step", 0))
     result = read_json(cell / RESULTS_NAME)
+    if result is not None and normalise is not None:
+        try:
+            result = normalise(result)
+        except Exception:  # noqa: BLE001 - a kind's translation must never blind the status
+            pass
     progress = read_json(cell / PROGRESS_NAME)
     if result is not None:
         st.result = result

@@ -70,7 +70,9 @@ def state_of(units: List[UnitState], lock: Optional[Dict]) -> Tuple[str, str]:
 
 def run_status(spec: RunSpec, kind: RunKind, out: Path) -> RunStatus:
     out = Path(out)
-    units = [read_unit(unit_dir(out, u), unit=u, heartbeat_seconds=spec.cadence.heartbeat_seconds)
+    normalise = getattr(kind, "read_result", None)
+    units = [read_unit(unit_dir(out, u), unit=u, heartbeat_seconds=spec.cadence.heartbeat_seconds,
+                       normalise=normalise)
              for u in kind.units(spec)]
     lock = lock_holder(out)
     state, tone = state_of(units, lock)
