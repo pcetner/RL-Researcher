@@ -185,6 +185,7 @@ class RunKind(Protocol):
     def pin(self, spec: RunSpec, path: Path) -> Optional[str]: ...
     def prepare(self, spec: RunSpec, ctx: RunContext) -> Any: ...
     def run_unit(self, spec: RunSpec, unit: str, prepared: Any, ctx: UnitContext) -> UnitResult: ...
+    def read_result(self, result: Dict[str, Any]) -> Dict[str, Any]: ...
     def summarise(self, spec: RunSpec, results: List[Dict[str, Any]], out: Path, ctx: RunContext) -> Dict[str, Any]: ...
     def curves(self, spec: RunSpec) -> List[CurveSpec]: ...
     def log_vocab(self) -> LogVocab: ...
@@ -237,6 +238,16 @@ class BaseKind:
 
     def run_unit(self, spec: RunSpec, unit: str, prepared: Any, ctx: UnitContext) -> UnitResult:
         raise NotImplementedError
+
+    def read_result(self, result: Dict[str, Any]) -> Dict[str, Any]:
+        """One unit's ``results.json`` in the framework's shape.
+
+        The identity for a kind whose runs were always written by this framework. A kind whose
+        finished runs predate it overrides this to translate on read: those files are evidence,
+        and rewriting evidence so a newer tool can parse it is exactly what the ledger exists
+        to make impossible.
+        """
+        return result
 
     def summarise(self, spec: RunSpec, results: List[Dict[str, Any]], out: Path, ctx: RunContext) -> Dict[str, Any]:
         return {}
