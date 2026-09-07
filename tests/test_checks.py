@@ -280,15 +280,14 @@ def test_C12_a_diagnosis_that_never_says_post_hoc(project):
 def test_C10_an_invariants_block_that_drifted(tmp_path):
     """Four copies of a rule is four rules, and the one that drifts is the one being read."""
     skills = tmp_path / "skills"
-    for i, tail in enumerate(("the same", "the same")):
-        d = skills / f"s{i}"
+    for i in (0, 1):
+        d = skills / f"rl-s{i}"
         d.mkdir(parents=True)
-        (d / "SKILL.md").write_text(f"x\n<!-- invariants -->\n{tail}\n<!-- invariants -->\n",
+        (d / "SKILL.md").write_text("x\n<!-- invariants -->\nthe same\n<!-- invariants -->\n",
                                     encoding="utf-8")
-    assert not run_checks("ci", root=tmp_path, config=None) or \
-        "C10" not in _ids(run_checks("ci", root=tmp_path))
+    assert "C10" not in _ids(run_checks("ci", root=tmp_path))
 
-    (skills / "s1" / "SKILL.md").write_text(
+    (skills / "rl-s1" / "SKILL.md").write_text(
         "x\n<!-- invariants -->\ndrifted\n<!-- invariants -->\n", encoding="utf-8")
     found = run_checks("ci", root=tmp_path)
     assert "C10" in _ids(found)
@@ -296,11 +295,26 @@ def test_C10_an_invariants_block_that_drifted(tmp_path):
         f.message for f in found if f.check == "C10")
 
 
-def test_C10_a_skill_with_no_invariants_block_at_all(tmp_path):
-    d = tmp_path / "skills" / "only"
+def test_C10_a_shipped_skill_with_no_invariants_block_at_all(tmp_path):
+    d = tmp_path / "skills" / "rl-only"
     d.mkdir(parents=True)
     (d / "SKILL.md").write_text("no block here\n", encoding="utf-8")
-    assert "C10" in _ids(run_checks("ci", root=tmp_path))
+    found = run_checks("ci", root=tmp_path)
+    assert "C10" in _ids(found)
+    assert "has no" in next(f.message for f in found if f.check == "C10")
+
+
+def test_a_project_skill_beside_the_shipped_ones_is_not_asked_for_a_copy(tmp_path):
+    """Auto-SM64 keeps a skill for its own instruments and its engine. It extends the four
+    rather than repeating their rules, so C10 does not ask it for the block."""
+    skills = tmp_path / "skills"
+    (skills / "rl-one").mkdir(parents=True)
+    (skills / "rl-one" / "SKILL.md").write_text(
+        "x\n<!-- invariants -->\nthe rules\n<!-- invariants -->\n", encoding="utf-8")
+    (skills / "autosm64").mkdir(parents=True)
+    (skills / "autosm64" / "SKILL.md").write_text("no block, and that is fine\n",
+                                                  encoding="utf-8")
+    assert "C10" not in _ids(run_checks("ci", root=tmp_path))
 
 
 def test_C11_the_two_lists_are_each_others_index():
