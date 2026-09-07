@@ -350,3 +350,62 @@ def test_an_arm_no_bar_could_judge_is_not_reported_as_having_cleared_them(projec
     said, _missed = outcome(spec, summary)
     assert "Not judged" not in said
     assert "Cleared every registered bar" in said or "No arm cleared" in said
+
+
+# ── which order the figures argue in, and what the evidence shows ─────────────────────────
+
+class _Ordered:
+    """A kind that declares how its pictures are meant to be read."""
+
+    name = "ordered"
+    figure_order = ("scorecard", "drift_curve", "action_panel", "collapse_panel")
+    figure_captions = {"scorecard": "one dot per unit, the bar dashed",
+                       "collapse_panel": "under the floor is a collapsed latent"}
+    evidence_order = ("strip", "disagreement", "training")
+    evidence_captions = {"strip": "real frames, then imagined ones, then the difference",
+                         "training": "losses and the batch participation ratio"}
+
+
+def test_the_figures_are_in_the_order_the_kind_declares_not_alphabetical():
+    """Alphabetical is an order, not *the* order. A study's four figures argue in sequence, and
+    sorting them puts collapse first and the scorecard third — a different argument."""
+    from rl_researcher.artefacts.run_report import _ordered
+
+    figs = {"collapse_panel": "d.png", "scorecard": "a.png",
+            "action_panel": "c.png", "drift_curve": "b.png"}
+    got = [n for n, _ in _ordered(figs.items(), _Ordered.figure_order)]
+    assert got == list(_Ordered.figure_order)
+    assert sorted(figs) != got, "the fixture would pass under sorted(), so it proves nothing"
+
+
+def test_a_figure_the_kind_forgot_to_name_still_appears_and_appears_last():
+    from rl_researcher.artefacts.run_report import _ordered
+
+    figs = {"scorecard": "a.png", "surprise": "z.png", "another": "y.png"}
+    assert [n for n, _ in _ordered(figs.items(), _Ordered.figure_order)] == [
+        "scorecard", "another", "surprise"]
+
+
+def test_a_kind_that_declares_no_order_keeps_the_alphabetical_one():
+    from rl_researcher.artefacts.run_report import _order, _ordered
+
+    figs = {"b": "1", "a": "2"}
+    assert _order(object(), "figure_order") == ()
+    assert [n for n, _ in _ordered(figs.items(), ())] == ["a", "b"]
+
+
+def test_the_evidence_gallery_says_what_each_kind_of_picture_shows():
+    """A per-unit image with no caption is a picture; with one it is evidence. The captions are
+    the same for every unit, so they are said once above rather than forty times below."""
+    from rl_researcher.artefacts.run_report import _evidence, _evidence_note
+
+    note = _evidence_note(_Ordered())
+    assert note.index("**strip.**") < note.index("**training.**")     # the declared order
+    assert "real frames" in note and "participation ratio" in note
+    assert "disagreement" not in note                                  # declared, no caption
+
+    runs = [{"arm": "ols", "seed": 0,
+             "evidence": {"training": "t.png", "strip": "s.png", "disagreement": "d.png"}}]
+    assert [label for label, _ in _evidence(runs, _Ordered())] == [
+        "ols seed 0 · strip", "ols seed 0 · disagreement", "ols seed 0 · training"]
+    assert _evidence_note(object()) == "Linked here; shown in the page beside this file."
