@@ -17,13 +17,14 @@ arithmetic and different timestamp handling.
 from __future__ import annotations
 
 import html
+import math
 import re
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
-from rl_researcher import atomic
+from rl_researcher import atomic, charts
 from rl_researcher import plotstyle as ps
 from rl_researcher.kinds import LogVocab, RunKind
 from rl_researcher.spec import RunSpec
@@ -269,3 +270,383 @@ def periodic_writer(render: Renderer, target: Path, *, log: Optional[Callable[[s
                     f"(the run itself is unaffected)")
 
     return write
+
+
+# ── the panels ────────────────────────────────────────────────────────────────────────────
+#
+# Every one of these is generic over ``(spec, kind)``. What used to make them a study's is that
+# they reached for that project's metric titles, definitions and formulas directly; they ask the
+# kind's ``registry`` for those now, and its ``curves(spec)`` for which series to draw. A kind
+# that declares neither still gets a page: names fall back to the metric's own, and the curve
+# columns simply do not appear.
+
+LOG_NOTE = '<span class="logs">log scale</span>'
+
+
+def _title(kind: RunKind, name: str) -> str:
+    reg = getattr(kind, "registry", None)
+    return reg.title(name) if reg is not None else name
+
+
+def duration(seconds: Optional[float]) -> str:
+    if seconds is None or (isinstance(seconds, float) and seconds != seconds):
+        return "—"
+    s = int(max(seconds, 0))
+    if s < 90:
+        return f"{s}s"
+    if s < 5400:
+        return f"{s // 60}m"
+    return f"{s // 3600}h {(s % 3600) // 60:02d}m"
+
+
+def bubble(kind: RunKind, metric: Any, *, up: bool = False) -> str:
+    """What a metric is, the way a reference would put it: expression, definition, reason.
+
+    The definition comes from the kind's registry and the reason from the spec's own ``why`` --
+    both already written, neither invented for the page -- and the expression is typeset rather
+    than spelled out, because a ratio written in slashes and pipes is a sentence pretending to
+    be maths.
+    """
+    from rl_researcher.mathtex import formula_svg
+
+    reg = getattr(kind, "registry", None)
+    parts = [f'<b>{html.escape(_title(kind, metric.name))}</b>']
+    tex = formula_svg(reg.formula(metric.name), scale=1.15) if reg is not None else ""
+    if tex:
+        parts.append(f'<span class="bmath">{tex}</span>')
+    target = charts.target_label(metric.bar, metric.direction)
+    if target:
+        parts.append(f'<span class="t">{target}</span>')
+    what = html.escape(reg.description(metric.name) if reg is not None else "")
+    if what:
+        parts.append(f'<span class="w">{what}</span>')
+    if getattr(metric, "why", ""):
+        parts.append(f'<span class="y">{html.escape(metric.why)}</span>')
+    return f'<span class="bubble{" up" if up else ""}">{"".join(parts)}</span>'
+
+
+def metric_rows(spec: RunSpec, kind: RunKind, units: Sequence[UnitState],
+                order: Sequence[str]) -> str:
+    """The scorecard: one row per registered metric, its lane drawn as a small SVG.
+
+    Rendered even before a unit finishes -- names, targets and empty lanes -- because a panel
+    that does not exist yet cannot tell a reader what is being measured.
+    """
+    rows = []
+    total = len(spec.metrics)
+    for i, m in enumerate(spec.metrics):
+        values = [(u.arm, float(metrics_of(u).get(m.name, float("nan"))),
+                   f"{u.arm} seed {u.seed}: "
+                   f'{charts.fmt(float(metrics_of(u).get(m.name, float("nan"))))}')
+                  for u in units]
+        seeds = [int(u.seed) for u in units]
+        # A diverged seed is excluded from the mean and counted instead: averaging it in gave
+        # 9.2e19, which is not this metric's central value in any sense a reader could use.
+        finite = [v for _, v, _ in values if math.isfinite(v)]
+        gone = sum(1 for _, v, _ in values if math.isinf(v))
+        mean = charts.fmt(sum(finite) / len(finite)) if finite else "—"
+        if gone:
+            mean += f'<span class="sp">{gone} diverged</span>'
+        log = charts.is_log([v for _, v, _ in values], m.bar)
+        # The last rows would push a downward bubble past the panel, which clips it.
+        up = i >= max(total - 4, total // 2)
+        title = _title(kind, m.name)
+        rows.append(
+            f'<div class="mrow">'
+            f'<div class="mname">{html.escape(title)}{bubble(kind, m, up=up)}</div>'
+            f'<div class="mtarget">{charts.target_label(m.bar, m.direction) or "Reported"}'
+            f'{LOG_NOTE if log else ""}</div>'
+            f'<div class="mtrack">'
+            f'{charts.track(values, m.bar, m.direction, list(order), label=title, seeds=seeds)}'
+            f'</div>'
+            f'<div class="mval">{mean}</div>'
+            f'</div>')
+    return f'<div class="mrows">{"".join(rows)}</div>'
+
+
+def arm_table(spec: RunSpec, kind: RunKind, agg: Dict[str, Any], order: Sequence[str]) -> str:
+    """Arms down the side, metrics across the top: mean, spread, pass mark, best marked.
+
+    This is not a second set of tracks. The scorecard above places every unit by position, so a
+    positional chart of the same numbers aggregated would be the same picture twice. A table
+    makes a different kind of statement -- exact values, side by side, comparable down a
+    column -- which is the one thing the scorecard cannot do.
+    """
+    from rl_researcher.artefacts.report import judge
+
+    metrics = [m for m in spec.metrics if m.bar is not None]
+    present = [a for a in order if a in agg]
+    if not metrics or not present:
+        return ""
+
+    def value(name: str, metric: Any) -> Optional[Tuple[float, float, int, int]]:
+        mean, std, n, div = agg[name].get(metric.name, (float("nan"), float("nan"), 0, 0))
+        return (mean, std, n, div) if n and not math.isnan(mean) else None
+
+    best: Dict[str, str] = {}
+    for m in metrics:
+        # An arm with a diverged seed is not eligible to be the best at anything: its mean is
+        # over the seeds that survived, which is not the same quantity the others report.
+        scored = [(a, got[0]) for a in present for got in [value(a, m)] if got and not got[3]]
+        # Two, not one. Early in a run a single arm has finished units and every column crowned
+        # it -- best-of-one is not a comparison, and it reads like a result.
+        if len(scored) > 1:
+            pick = (min if m.direction == "lower" else max)(scored, key=lambda kv: kv[1])
+            best[m.name] = pick[0]
+
+    heads = "".join(
+        f'<th class="mid">{html.escape(_title(kind, m.name))}'
+        f'<span class="th2">{charts.target_label(m.bar, m.direction) or "Reported"}</span></th>'
+        for m in metrics)
+    rows = []
+    for name in present:
+        cells, seeds = [], 0
+        for m in metrics:
+            got = value(name, m)
+            if not got:
+                cells.append('<td class="num mid of">not computed</td>')
+                continue
+            mean, std, n, div = got
+            seeds = max(seeds, n + div)
+            ok = judge(m, mean, div, arm=name)
+            spread = (f'<span class="sp">± {charts.fmt(std)}</span>'
+                      if n > 1 and not math.isnan(std) else "")
+            if div:
+                spread += f'<span class="sp">{div} of {n + div} diverged</span>'
+            crown = '<span class="crown">best</span>' if best.get(m.name) == name else ""
+            # Three outcomes, not two. `None` is the reference arm of a comparison, which is
+            # never judged against itself; printing a cross there marks a number that was
+            # never on trial.
+            tone, mark = ("ok", "✓") if ok else (("no", "✗") if ok is False else ("of", ""))
+            cells.append(f'<td class="num mid {tone}">{charts.fmt(mean)}'
+                         f'<span class="mark">{mark}</span>{spread}{crown}</td>')
+        rows.append(f'<tr><td class="cell">{charts.glyph(name, list(order))}{html.escape(name)}'
+                    f'<span class="seed">{seeds} seed{"" if seeds == 1 else "s"}</span></td>'
+                    f'{"".join(cells)}</tr>')
+    return f'<table class="vtable"><tr><th>arm</th>{heads}</tr>{"".join(rows)}</table>'
+
+
+def identity(unit: UnitState, order: Sequence[str], *, best: bool = False) -> str:
+    star = '<span class="best">best</span>' if best else ""
+    return (f'<td class="cell">{charts.glyph(unit.arm, list(order), seed=int(unit.seed))}'
+            f'{html.escape(unit.arm)}<span class="seed">seed {unit.seed}</span>{star}</td>')
+
+
+def state_cell(unit: UnitState) -> str:
+    label, tone = chip(unit)
+    return f'<td><span class="chip t-{tone}">{label}</span></td>'
+
+
+def notes(unit: UnitState) -> str:
+    out = []
+    if unit.error:
+        out.append(html.escape(str(unit.error)))
+    if unit.resumable and unit.checkpoint_step is not None:
+        out.append(f"resumable from {unit.checkpoint_step:,}")
+    if unit.resumed_from_step:
+        out.append(f"resumed at {unit.resumed_from_step:,}")
+    if unit.age is not None and not unit.done:
+        out.append(f"updated {duration(unit.age)} ago")
+    return f'<td class="note">{"<br>".join(out)}</td>'
+
+
+def curves_of(spec: RunSpec, kind: RunKind) -> List[Any]:
+    try:
+        return list(kind.curves(spec))
+    except Exception:  # noqa: BLE001 - a page must never take a run down
+        return []
+
+
+def floors_of(spec: RunSpec, kind: RunKind) -> Dict[str, Optional[float]]:
+    """Each curve's floor line, taken from the metric the kind says the curve is bounded by.
+
+    The study page hardcoded one metric name here. A curve drawn with its floor shows a plateau
+    under the bar as a decision to make rather than as a line going along, and which metric that
+    is, is the kind's to say -- ``CurveSpec.floor_metric`` is on the protocol for exactly this.
+    """
+    bars = {m.name: m.bar for m in spec.metrics}
+    return {c.key: (bars.get(c.floor_metric) if c.floor_metric else None)
+            for c in curves_of(spec, kind)}
+
+
+def running_table(spec: RunSpec, kind: RunKind, data: DashboardData) -> str:
+    """Units still going: progress, rate, and each curve under its own name.
+
+    Failed units are excluded and get :func:`failed_panel`. One sat here reading ``0.0 steps/s``
+    under a heading that said it was in progress, with the reason for the failure in the notes
+    column, off past the horizontal scroll at any normal width.
+    """
+    order = data.order
+    live = [u for u in data.units if not u.done and u.status not in ("not started", "failed")]
+    if not live:
+        return ""
+    curves = curves_of(spec, kind)
+    floors = floors_of(spec, kind)
+    heads = "".join(f'<th class="mid">{html.escape(c.title)}</th>' for c in curves)
+    rows = []
+    for u in live:
+        colour = ps.variant_color(u.arm, list(order))
+        step, cap = int(u.step or 0), int(u.max_steps or spec.budget.max_steps or 1)
+        pct = 100.0 * step / max(cap, 1)
+        history = history_of(u)
+        last = last_of(u, [c.key for c in curves])
+        cols = []
+        for c in curves:
+            series = history.get(c.key, [])
+            svg = charts.curve(series, colour=colour, label=c.title, steps=step,
+                               floor=floors.get(c.key))
+            got = last.get(c.key)
+            shown = "—" if got is None or float(got) != float(got) else charts.fmt(float(got))
+            first = f"{charts.fmt(float(series[0]))} → " if len(series) >= 2 else ""
+            cols.append(f'<td class="curve">{svg}'
+                        f'<span class="range">{first}<b>{shown}</b></span></td>')
+        rows.append(f"""
+    <tr>{identity(u, order)}{state_cell(u)}
+      <td class="num">{step:,}<span class="of"> / {cap:,}</span>
+        <div class="track"><i style="width:{pct:.1f}%;background:{colour}"></i></div></td>
+      <td class="num">{float(u.rate or 0.0):.1f}<span class="of"> steps/s</span></td>
+      <td class="num">{duration(u.eta_seconds)}</td>
+      {''.join(cols)}{notes(u)}
+    </tr>""")
+    return (f'<div class="panel scroll"><h2>in progress</h2><table>'
+            f'<tr><th>unit</th><th>state</th><th>step</th><th>rate</th><th>time left</th>'
+            f'{heads}<th></th></tr>{"".join(rows)}</table></div>')
+
+
+def finished_table(spec: RunSpec, kind: RunKind, data: DashboardData) -> str:
+    """Units that finished: one column per registered bar-metric, with its pass mark."""
+    from rl_researcher.artefacts.report import judge
+
+    order = data.order
+    done = data.with_metrics()
+    if not done:
+        return ""
+    bars = [m for m in spec.metrics if m.bar is not None]
+    primary = bars[0] if bars else None
+    if primary is not None:
+        # Best first on the primary metric, so the answer is the top line.
+        def rank(u: UnitState) -> float:
+            v = float(metrics_of(u).get(primary.name, float("nan")))
+            if v != v:
+                return float("inf")
+            return v if primary.direction == "lower" else -v
+        done = sorted(done, key=rank)
+    curves = curves_of(spec, kind)
+    floors = floors_of(spec, kind)
+    curve_heads = "".join(f'<th class="mid">{html.escape(c.title)}</th>' for c in curves)
+    heads = "".join(f'<th class="mid">{html.escape(_title(kind, m.name))}'
+                    f'<span class="th2">{charts.target_label(m.bar, m.direction)}</span></th>'
+                    for m in bars)
+    rows = []
+    for idx, u in enumerate(done):
+        colour = ps.variant_color(u.arm, list(order))
+        history = history_of(u)
+        drawn = "".join(
+            f'<td class="curve">'
+            f"{charts.curve(history.get(c.key, []), colour=colour, label=c.title, floor=floors.get(c.key), steps=int(u.step or 0))}"
+            f'</td>' for c in curves)
+        cols = []
+        for m in bars:
+            v = float(metrics_of(u).get(m.name, float("nan")))
+            if v != v:
+                cols.append('<td class="num mid of">n/a</td>')
+                continue
+            # One unit, so a non-finite value is this unit's own divergence rather than a count
+            # across seeds. charts.fmt renders it "diverged"; judge refuses it either way.
+            ok = judge(m, v, 0 if math.isfinite(v) else 1, arm=u.arm)
+            tone, mark = ("ok", "✓") if ok else (("no", "✗") if ok is False else ("of", ""))
+            cols.append(f'<td class="num mid {tone}">{charts.fmt(v)}'
+                        f'<span class="mark">{mark}</span></td>')
+        top = idx == 0 and len(done) > 1
+        rows.append(f"""
+    <tr{' class="bestrow"' if top else ""}>{identity(u, order, best=top)}{state_cell(u)}
+      <td class="num">{duration(u.elapsed_seconds)}</td>{''.join(cols)}{drawn}{notes(u)}
+    </tr>""")
+    return (f'<div class="panel scroll"><h2>finished</h2><table>'
+            f'<tr><th>unit</th><th>state</th><th>time</th>{heads}{curve_heads}<th></th></tr>'
+            f'{"".join(rows)}</table></div>')
+
+
+def failed_panel(data: DashboardData) -> str:
+    """Units that died, with the reason first.
+
+    Its own panel, in the reading order between what is running and what is queued -- a failure
+    has to be noticed without the page dropping everything else for it. The whole-run chip at
+    the top already says FAILED; this says which unit, why, and where to resume from.
+    """
+    order = data.order
+    dead = [u for u in data.units if u.failed]
+    if not dead:
+        return ""
+    rows = []
+    for u in dead:
+        label, tone = chip(u)
+        where = [f"stopped at {int(u.step or 0):,} of {int(u.max_steps or 0):,}"]
+        if u.resumable and u.checkpoint_step is not None:
+            where.append(f"resumable from {u.checkpoint_step:,}")
+        if u.age is not None:
+            where.append(f"updated {duration(u.age)} ago")
+        rows.append(
+            f'<div class="failrow">'
+            f'<div class="failwho">{charts.glyph(u.arm, list(order), seed=int(u.seed))}'
+            f'{html.escape(u.arm)}<span class="seed">seed {u.seed}</span>'
+            f'<span class="chip t-{tone}">{label}</span></div>'
+            f'<div class="failmsg">{html.escape(str(u.error or "no reason recorded"))}</div>'
+            f'<div class="failnote">{" · ".join(where)}</div></div>')
+    plural = "" if len(dead) == 1 else "s"
+    return (f'<div class="panel"><h2>failed · {len(dead)} unit{plural}</h2>'
+            f'<div class="fails">{"".join(rows)}</div></div>')
+
+
+def queued_panel(data: DashboardData) -> str:
+    """Units not started yet — their own box, so the in-progress table ends cleanly."""
+    order = data.order
+    queued = [u for u in data.units if u.status == "not started"]
+    if not queued:
+        return ""
+    chips = "".join(f'<span class="qchip">{charts.glyph(u.arm, list(order))}'
+                    f'{html.escape(u.arm)}<i>seed {u.seed}</i></span>' for u in queued)
+    return (f'<div class="panel"><h2>queued · {len(queued)}</h2>'
+            f'<div class="queued">{chips}</div></div>')
+
+
+def headline(spec: RunSpec, kind: RunKind, data: DashboardData) -> str:
+    """The best finished unit, as chips rather than a sentence.
+
+    Four numbers and two pass marks do not belong in prose. The floor travels with the win: a
+    unit over the primary bar but under a collapse floor is not a winner, and the header must
+    not read like it is. Which metric that floor is, is the kind's to say, through the
+    ``floor_metric`` of the curves it declares -- the study page had one name hardcoded here.
+    """
+    from rl_researcher.artefacts.report import judge
+
+    primary = next((m for m in spec.metrics if m.bar is not None), None)
+    if primary is None:
+        return ""
+    # isfinite, not "not isnan": a diverged unit reports inf, and on a "higher is better"
+    # primary metric max() would have crowned it the headline of the whole run.
+    done = [u for u in data.with_metrics()
+            if math.isfinite(float(metrics_of(u).get(primary.name, float("nan"))))]
+    if not done:
+        return ""
+    best = (min if primary.direction == "lower" else max)(
+        done, key=lambda u: float(metrics_of(u)[primary.name]))
+
+    floor_names = {c.floor_metric for c in curves_of(spec, kind) if c.floor_metric}
+    floor = next((m for m in spec.metrics if m.name in floor_names), None)
+    chips = []
+    for m in [primary] + ([floor] if floor is not None and floor is not primary else []):
+        if m is None or m.bar is None:
+            continue
+        v = float(metrics_of(best).get(m.name, float("nan")))
+        if not math.isfinite(v):
+            continue
+        ok = judge(m, v, arm=best.arm)
+        chips.append(f'<span class="stat {"ok" if ok else "no"}">'
+                     f'<span class="n">{html.escape(_title(kind, m.name))}</span>'
+                     f'<b>{v:.3f}</b>'
+                     f'<span class="n">{charts.target_label(m.bar, m.direction)}</span></span>')
+    who = (f'<span class="k">Current best</span>'
+           f'<span class="who">{charts.glyph(best.arm, list(data.order))}'
+           f'{html.escape(best.arm)}<i>seed {best.seed}</i></span>')
+    return who + "".join(chips)
