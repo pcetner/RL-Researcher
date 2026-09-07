@@ -113,18 +113,16 @@ the next `state` reads them.
 
 The package is incomplete. These are not present:
 
-- the live dashboard, the index page, and the measurement and diagnosis writers.
-  `rl_researcher.artefacts` has the report, the state page and the shared statistics only;
-- the watcher that regenerates documents and notifies when no session is open;
+- the measurement and diagnosis writers. `rl_researcher.artefacts` has the report, the state
+  page, the live dashboard, the index and the shared statistics;
 - the check registry (`rl_researcher.checks`), the lint command, and the git hooks. `check`,
   `pin` and `run` already look for the registry and find nothing, so only a kind's own
   `check` method produces findings today;
 - the Claude Code skills. No skills are written yet, so `install_skills` finds none and installs
   nothing.
 
-Four hooks on the run-kind protocol — `curves`, `log_vocab`, `blocks` and `instrument_for` —
-are read by nothing until those pieces land. A kind may implement them now; they will take
-effect when the dashboard does.
+One hook on the run-kind protocol — `blocks` — is read by nothing until the measurement writers
+land. A kind may implement it now; it will take effect when they do.
 
 ## Commands
 
@@ -144,6 +142,14 @@ reads them.
 | `decide` | record a decision from a ticked box | 0, 1 if no box is ticked |
 | `ledger_cli` | read the ledger, or backfill it from finished runs | 0, 1 on a hand-written registered row |
 | `plan_sync` | rewrite a plan's evidence regions from the ledger | 0, 1 with `--check` when out of step |
+| `watcher` | act on what changed since the last tick, and say so | 0 |
+
+`watcher` is the only one meant to run unattended. One tick reads every run's status, compares
+it against the tick before, and does what a person would: on a run that just finished, the
+report, the ledger rows, the state page and the index; on one that failed, went quiet, or blew
+past its own projection, a line in `watcher.log` and a toast. It starts nothing —
+`[watcher] launch` is off by default, because starting queued work is a decision.
+`scripts/install_watcher.ps1` registers it as a logon task.
 
 Two utilities sit outside that flow: `install_skills` copies the Claude Code skills into
 `~/.claude/skills` (there are none yet), and `colab_mirror` mirrors a running output directory

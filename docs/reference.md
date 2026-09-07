@@ -156,6 +156,35 @@ Text outside the markers is never read and never written.
 
 `--check` writes nothing and exits 1 if a synchronisation would change anything.
 
+### `watcher [--once] [--interval S] [--quiet] [--dry-run]`
+
+One tick reads the status of every spec under `[paths].specs`, diffs it against the last tick
+on disk, and acts on what changed:
+
+| what changed | what it does |
+|---|---|
+| a run reached `finished` | writes the report, upserts the ledger, rewrites the state page and the index, and says so |
+| a run reached `FAILED` | says so, with the first line of the reason. Nothing is written |
+| a run went `STALE` | says so once — the heartbeat has stopped, so the process is probably gone |
+| a run is past its own projection by `[watcher] eta_overrun` | says so once, against the estimate the run made when it started rather than the one it is making now |
+
+It starts nothing, and there is no code path in it that could. `[watcher] launch` is off by
+default because starting queued work is a decision, and a decision needs a person; the watcher's
+job is to make sure the person finds out there is one to make.
+
+The last tick is `<paths.logs>/watcher.json` and the record is `<paths.logs>/watcher.log`, one
+flushed line per event. The diff is against the file, not against memory, so a watcher that is
+killed — a reboot, a sleep, a scheduled-task restart — picks up where it left off instead of
+announcing every finished run in the project again.
+
+`--quiet` logs every event and raises no toast. `--dry-run` says what changed and writes no
+report, ledger row, state page or index. `--once` is a single tick, for a cron or a check.
+
+The toast is the courtesy channel and the log line is the record: Windows toast varies by build,
+by focus assist and by whether the session is interactive, so a failed toast is logged as one
+line saying why and the watch continues. `scripts/install_watcher.ps1` registers `pythonw -m
+rl_researcher.watcher` as a logon task for one project (`-Remove` unregisters it).
+
 ### `install_skills [--dest DIR] [--dry-run]`
 
 Copies every directory under the package's `skills/` that holds a `SKILL.md` into
