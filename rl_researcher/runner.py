@@ -173,7 +173,17 @@ def run(
             log(f"running only {len(selected)} of {len(all_units)} units on this machine")
         ctx = RunContext(out=out, log=log, device=device, max_steps=max_steps, max_seconds=max_seconds,
                          config=config, selected=selected)
-        prepared = kind.prepare(spec, ctx)
+        # Preparing is what costs: a snapshot read into memory, a model built, an engine binary
+        # demanded. When every selected unit already has a result there is nothing to prepare
+        # for, and the run is really a request to rebuild the summary from what is on disk —
+        # which must work on a machine that could not have produced it.
+        todo = [u for u in selected
+                if not (resume and (unit_dir(out, u) / RESULTS_NAME).is_file())]
+        prepared = None
+        if todo:
+            prepared = kind.prepare(spec, ctx)
+        else:
+            log(f"every unit of {spec.name} already has a result; rebuilding the summary only")
 
         results: List[Dict[str, Any]] = []
         for unit in all_units:
