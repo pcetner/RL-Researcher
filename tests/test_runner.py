@@ -9,7 +9,8 @@ import pytest
 
 pytestmark = pytest.mark.tier1
 
-from rl_researcher.runner import GuardBlocked, missing_units, run  # noqa: E402
+from rl_researcher.runner import (CheckFailed, GuardBlocked,  # noqa: E402
+                                  missing_units, run)
 from rl_researcher.status import print_status, run_status  # noqa: E402
 from rl_researcher.stop import HotStop  # noqa: E402
 from rl_researcher.units import read_json, unit_dir  # noqa: E402
@@ -226,3 +227,73 @@ def test_a_units_last_heartbeat_says_how_it_actually_ended(project):
         result = json.loads((cell / "results.json").read_text(encoding="utf-8"))
         assert result["status"] == "incomplete", "a zero time cap stops before the step budget"
         assert beat["status"] == "incomplete", beat["status"]
+
+
+def _finding(level, message="the snapshot digest is not the one the spec registers"):
+    from rl_researcher.kinds import Finding
+
+    return lambda self, s, c=None: [Finding("manifest", level, message)]
+
+
+def test_an_error_finding_refuses_the_run_before_anything_is_prepared(toy, monkeypatch):
+    """A check that only fires when someone remembers to run the check command is not a check.
+
+    The cost of getting this wrong is the whole point: a loop scored against a model trained on
+    differently-shaped observations produces numbers that look fine and mean nothing, and it
+    costs an engine window to produce them.
+    """
+    config, kind, spec, out = toy
+    monkeypatch.setattr(type(kind), "check", _finding("error"))
+    prepared = []
+    monkeypatch.setattr(type(kind), "prepare", lambda self, s, ctx: prepared.append(1))
+    with pytest.raises(CheckFailed, match="the snapshot digest"):
+        run(spec, kind, out, config=config)
+    assert not prepared, "prepare ran after a check said the registration was wrong"
+    assert missing_units(kind, spec, out) == kind.units(spec), "a refused run left a result behind"
+    assert not (out / ".study-lock.json").exists()
+
+
+def test_a_refused_run_is_logged_as_a_refusal_and_not_as_a_failure(toy, monkeypatch):
+    config, kind, spec, out = toy
+    monkeypatch.setattr(type(kind), "check", _finding("error"))
+    lines = []
+    with pytest.raises(CheckFailed):
+        run(spec, kind, out, config=config, log=lines.append)
+    text = "\n".join(lines)
+    assert "check [manifest] error:" in text and "the snapshot digest" in text
+    assert "FAILED" not in text and "Traceback" not in text
+
+
+def test_a_warning_is_printed_and_the_run_goes_ahead(toy, monkeypatch):
+    config, kind, spec, out = toy
+    monkeypatch.setattr(type(kind), "check", _finding("warn", "no reference line is set"))
+    lines = []
+    summary = run(spec, kind, out, config=config, log=lines.append)
+    assert len(summary["runs"]) == 6
+    assert "check [manifest] warn: no reference line is set" in "\n".join(lines)
+
+
+def test_a_waived_check_says_so_in_the_run_s_own_log(toy, monkeypatch):
+    """The numbers this run produces stand on a registration something objected to, so the
+    objection has to live where the numbers do, not only in the terminal that launched it."""
+    config, kind, spec, out = toy
+    monkeypatch.setattr(type(kind), "check", _finding("error"))
+    summary = run(spec, kind, out, config=config, skip_checks=True)
+    assert len(summary["runs"]) == 6
+    log = (out / "run.log").read_text(encoding="utf-8")
+    assert "waived 1 check error(s) with --no-check" in log
+    assert "check [manifest] error: the snapshot digest" in log
+
+
+def test_run_and_check_ask_the_kind_the_same_questions(toy, monkeypatch):
+    """Two callers, one collector. A check present in the report and absent from the launch is
+    how an engine boots against a snapshot the check command would have refused."""
+    from rl_researcher.findings import collect
+
+    config, kind, spec, out = toy
+    asked = []
+    monkeypatch.setattr(type(kind), "check",
+                        lambda self, s, c=None: asked.append("check") or [])
+    collect(kind, spec, config)          # what `python -m rl_researcher.check` calls
+    run(spec, kind, out, config=config)  # and what the run path calls
+    assert asked == ["check", "check"]

@@ -165,8 +165,12 @@ stopped. `run` exits 4 when a guard blocks.
 
 Everything that can be established before anything expensive starts: that the model file exists,
 that the data matches the hash the spec registers, that a reference value needed to read the
-result is set. Return `Finding(check, level, message)` with a level of `"error"` or `"warn"`;
-`check` exits 1 if any error is returned.
+result is set. Return `Finding(check, level, message)` with a level of `"error"` or `"warn"`.
+
+Two callers ask, through the same collector: `check` reports and exits 1 on an error, and `run`
+refuses and exits 4. `run` asks after the guards and before `prepare`, so a refusal costs
+nothing — no model is loaded and no unit directory exists. `--no-check` waives it, and both the
+findings and the waiver go into the run's own log.
 
 Prefer a finding to an exception raised inside `run_unit`. Discovering halfway through the second
 unit that the data was wrong wastes everything before it, and produces numbers that look fine.

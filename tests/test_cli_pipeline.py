@@ -174,3 +174,21 @@ def test_installing_skills_from_a_tree_that_has_none_is_not_a_crash(tmp_path):
     from rl_researcher.install_skills import install
 
     assert install(tmp_path / "dest", source=tmp_path / "absent") == []
+
+
+def test_run_exits_4_on_a_check_error_and_no_check_waives_it(project, capsys, monkeypatch):
+    """The check command and the run command agree about the same spec, and the exit code says
+    the run was refused rather than that it broke."""
+    from rl_researcher.examples.toy.kind import ToyKind
+    from rl_researcher.kinds import Finding
+
+    monkeypatch.setattr(ToyKind, "check",
+                        lambda self, s, c=None: [Finding("data", "error", "the data moved")])
+    assert check.main([SPEC]) == 1
+    assert "run` would refuse this spec (exit 4)" in capsys.readouterr().out
+
+    assert run.main([SPEC, "--max-seconds", "5"]) == 4
+    printed = capsys.readouterr().out
+    assert "refused:" in printed and "the data moved" in printed
+
+    assert run.main([SPEC, "--max-seconds", "5", "--no-check"]) == 0

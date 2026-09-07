@@ -116,9 +116,9 @@ The package is incomplete. These are not present:
 - the live dashboard, the index page, and the measurement and diagnosis writers.
   `rl_researcher.artefacts` has the report, the state page and the shared statistics only;
 - the watcher that regenerates documents and notifies when no session is open;
-- the check registry (`rl_researcher.checks`), the lint command, and the git hooks. `check` and
-  `pin` already look for the registry and find nothing, so their error-finding exit paths are
-  currently unreachable;
+- the check registry (`rl_researcher.checks`), the lint command, and the git hooks. `check`,
+  `pin` and `run` already look for the registry and find nothing, so only a kind's own
+  `check` method produces findings today;
 - the Claude Code skills. No skills are written yet, so `install_skills` finds none and installs
   nothing.
 
@@ -137,7 +137,7 @@ reads them.
 | `pin` | write the data's content hash into the spec | 0 |
 | `estimate` | what a run will cost on this machine, and whether it is gated | 0, 3 if gated |
 | `approve` | record that a person approved a gated run | 0, 1 on a blank quote |
-| `run` | run every unit that has no result yet | 0, 1 failed, 2 locked, 3 gated, 4 guard |
+| `run` | run every unit that has no result yet | 0, 1 failed, 2 locked, 3 gated, 4 refused |
 | `status` | where every unit stands | 0, 2 if any is stale or failed |
 | `report` | write a finished run's report and its ledger rows | 0, 1 if the run has not finished |
 | `state` | write `docs/STATE.md`, `state.html` and `state.json` | 0 |
