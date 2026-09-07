@@ -113,3 +113,64 @@ def test_a_spec_can_be_named_instead_of_pathed(project, capsys):
     """The skills say `run toy-line-fit`; the project's specs directory is searched."""
     assert check.main(["toy-line-fit"]) == 0
     assert "toy-line-fit" in capsys.readouterr().out
+
+
+def test_every_spec_taking_verb_accepts_a_bare_run_name(project, capsys):
+    """The skills say `status toy-line-fit`, not a path.
+
+    `status` used to build its own parser and hand the argument straight to Path, so a bare name
+    raised FileNotFoundError while the same name worked on `check`. It is the verb a monitor
+    calls on a timer, so it is the worst one to have a second way of being addressed.
+    """
+    from rl_researcher import estimate as estimate_mod
+
+    assert check.main(["toy-line-fit"]) == 0
+    assert status.main(["toy-line-fit"]) == 0
+    assert pin.main(["toy-line-fit"]) == 0
+    assert estimate_mod.main(["toy-line-fit", "--max-seconds", "5"]) == 0
+
+
+def test_report_is_written_from_disk_and_says_so_when_there_is_nothing_to_write(project, capsys):
+    """A page only the process that produced it can produce is a page nobody can check."""
+    from rl_researcher import report
+
+    assert report.main([SPEC]) == 1
+    assert "has not finished" in capsys.readouterr().out
+
+    assert run.main([SPEC, "--max-seconds", "5"]) == 0
+    assert report.main([SPEC]) == 0
+    said = capsys.readouterr().out
+    assert "report ->" in said and "page   ->" in said and "new finding(s)" in said
+
+    out = project / "docs" / "toy" / "toy-line-fit"
+    assert (out / "README.md").is_file() and (out / "report.html").is_file()
+
+    # Twice is the same document and no new rows: regenerating is how a page is checked.
+    before = (out / "README.md").read_text(encoding="utf-8")
+    assert report.main([SPEC]) == 0
+    assert "0 new finding(s)" in capsys.readouterr().out
+    after = (out / "README.md").read_text(encoding="utf-8")
+    strip = [ln for ln in before.splitlines() if "generated=" not in ln]
+    assert strip == [ln for ln in after.splitlines() if "generated=" not in ln]
+
+
+def test_the_report_footer_names_a_command_that_exists(project):
+    """The regenerate command in a footer is the whole reason the footer is there."""
+    import importlib
+
+    from rl_researcher import report, run
+
+    assert run.main([SPEC, "--max-seconds", "5"]) == 0
+    assert report.main([SPEC]) == 0
+    text = (project / "docs" / "toy" / "toy-line-fit" / "README.md").read_text(encoding="utf-8")
+    named = "python -m rl_researcher.report toy-line-fit"
+    assert named in text
+    assert importlib.import_module("rl_researcher.report") is report
+
+
+def test_installing_skills_from_a_tree_that_has_none_is_not_a_crash(tmp_path):
+    """A fresh clone has no skills directory. Nothing to install is not an error, and a
+    traceback would read as a broken install rather than as an empty one."""
+    from rl_researcher.install_skills import install
+
+    assert install(tmp_path / "dest", source=tmp_path / "absent") == []

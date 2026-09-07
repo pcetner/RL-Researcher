@@ -1,19 +1,21 @@
-"""Mirror a run's output directory onto Google Drive while it runs.
+"""Mirror a run's output directory onto a slow, durable path while it runs.
 
-A Colab session can vanish at any moment, so the evidence has to live somewhere that
-outlives it. Training straight onto Drive is the wrong fix: ``checkpoint.pt`` carries the
-model *and* the Adam state (100-330 MB for the current variants), and writing that across
-the Drive FUSE mount every few hundred steps costs more than the training it protects and
-can tear on disconnect. So a study writes to local disk at full speed and this mirrors it,
-small files often and the heavy checkpoints rarely.
+Written for Google Colab, where a session can vanish at any moment and the evidence has to
+live somewhere that outlives it. Running the work directly onto the mounted Drive is the wrong
+fix: a checkpoint carrying model and optimiser state is hundreds of megabytes, and writing that
+across a FUSE mount every few hundred steps costs more than the work it protects, and can tear
+on a disconnect. So a run writes to local disk at full speed and this mirrors it — the small
+files often, the heavy ones rarely.
 
-    python -u -m rl_researcher.colab_mirror --src /content/study-out \
-        --dst /content/drive/MyDrive/auto-sm64/studies/study3-sticky-actions &
+    python -u -m rl_researcher.colab_mirror --src /content/out         --dst /content/drive/MyDrive/project/run-name &
 
-Copies a file only when its size or mtime differs from the destination, writes through a
-``.part`` temporary so a half-copied file is never mistaken for a good one, survives a
-per-file error (Drive hiccups), and logs one line per pass (the never-silent rule).
-``--once`` does a single pass, which is what the final sync after a run is.
+A file is copied only when its size or modification time differs from the destination's. Each
+copy goes through a ``.part`` temporary, so a half-written file is never mistaken for a good
+one. A per-file error is logged and the pass continues, because a mount that hiccups on one
+file should not stop the mirror. One line is logged per pass. ``--once`` does a single pass
+including the heavy files, which is what a final sync after a run is.
+
+Nothing else in the package uses this; it is a utility for running somewhere ephemeral.
 """
 
 from __future__ import annotations
@@ -70,7 +72,7 @@ def mirror_once(src: Path, dst: Path, *, slow_globs: List[str], include_slow: bo
 
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--src", required=True, help="the study's --out directory on local disk")
+    p.add_argument("--src", required=True, help="the run's output directory on local disk")
     p.add_argument("--dst", required=True, help="where it should survive (a Drive path)")
     p.add_argument("--every", type=float, default=180.0, help="seconds between passes")
     p.add_argument("--slow-glob", default="checkpoint.pt",

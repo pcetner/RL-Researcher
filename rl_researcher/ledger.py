@@ -15,7 +15,7 @@ The file is `docs/ledger/findings.jsonl`, append-only. Nothing is ever edited or
 reading that turns out to be wrong is superseded by a new row that names the old one, and both
 stay, because "we believed X until Y" is itself a finding. Regenerating a report re-derives the
 same rows and writes none of them twice, because a registered row's identity is
-``(run, unit, metric, fingerprint, commit)``.
+``(kind, run, unit, metric, fingerprint, commit)``.
 
 Four kinds of row:
 
@@ -270,7 +270,8 @@ def open_ledger(config: Any) -> Ledger:
 
 
 def findings_from_summary(summary: Dict[str, Any], spec: Any, *, artefact: str = "",
-                          estimator: str = "", data: str = "", date: str = "") -> List[Finding]:
+                          estimator: str = "", data: str = "", date: str = "",
+                          kind: Any = None) -> List[Finding]:
     """One ``registered`` row per (arm, metric) of a finished run.
 
     The value is the mean over the arm's seeds and the spread is their standard deviation, both
@@ -306,7 +307,10 @@ def findings_from_summary(summary: Dict[str, Any], spec: Any, *, artefact: str =
                 # Judged through the same rule the report prints, and with the arm, so the
                 # reference of a comparison is not recorded as having failed to beat itself.
                 passed=judge(m, mean, diverged, reference=reference, arm=arm),
-                estimator=estimator,
+                # Asked per metric, because a kind may compute two of them with different
+                # functions; stamping every row with the first metric's estimator would name
+                # the wrong one for the rest, silently.
+                estimator=(kind.estimator_name(m.name) if kind is not None else estimator),
                 commit=str(summary.get("git_sha", ""))[:12],
                 fingerprint=str(summary.get("fingerprint", "")),
                 data=data or _data_tag(summary),

@@ -149,7 +149,10 @@ def _target(m: Any) -> str:
         return f"> `{m.compare_to}`" if m.direction == "higher" else f"< `{m.compare_to}`"
     if m.bar is None:
         return "report"
-    return ("≥ " if m.direction == "higher" else "≤ ") + fmt_number(m.bar)
+    # Strictly greater, strictly less: `passes` judges `v > bar`, so a column that reads
+    # "at least 0.900" beside a value of exactly 0.900 marked failed is the document
+    # disagreeing with itself about its own rule.
+    return ("> " if m.direction == "higher" else "< ") + fmt_number(m.bar)
 
 
 def lanes(spec: Any, summary: Dict[str, Any]) -> List[Lane]:
@@ -260,20 +263,19 @@ def build(spec: Any, summary: Dict[str, Any], out: Path, *, kind: Any = None,
     art.add("evidence", Gallery(title="Per unit", items=_evidence(runs),
                                 note="Linked here; shown in the page beside this file."))
 
-    art.add("provenance", KV(title="Provenance", pairs=_provenance(spec, summary)))
+    art.add("provenance", KV(title="Provenance", pairs=_provenance(spec, summary)),
+            Footer(text=f"Generated from {out.name}/results.json.", command=command))
 
     rows_written = []
     if ledger is not None:
         for f in ledger.extend(findings_from_summary(
-                summary, spec, artefact=str(out.name), data=_data(summary),
-                estimator=kind.estimator_name(spec.metrics[0].name) if kind and spec.metrics else "")):
+                summary, spec, artefact=str(out.name), data=_data(summary), kind=kind)):
             rows_written.append((f.id, f"{f.unit} {f.metric}", fmt_number(f.value)))
     art.add("ledger", Claims(rows=rows_written))
 
     art.stub("reading", "_(write here: what the numbers say, what the pictures say, where they "
                         "disagree. Cite every registered number as `[F####]`.)_")
     art.stub("decision", Stub(options=DECISION_OPTIONS).md())
-    art.add("decision", Footer(text=f"Generated from {out.name}/results.json.", command=command))
     return art
 
 

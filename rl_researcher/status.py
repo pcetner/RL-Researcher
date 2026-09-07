@@ -9,7 +9,6 @@ is a hang until proven otherwise; never wait it out.
 
 from __future__ import annotations
 
-import argparse
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -120,18 +119,15 @@ def print_status(st: RunStatus, log=print) -> int:
 
 
 def main(argv=None) -> int:
-    from rl_researcher.cli import console
-    from rl_researcher.config import kind_for, load_config, out_dir_for
+    # Through `load_all`, like every other spec-taking verb, so a bare run name resolves against
+    # the project's specs directory. This built its own parser and passed the argument straight
+    # to `Path`, so `status <name>` raised FileNotFoundError while `check <name>` worked -- and
+    # status is the one a monitor calls on a timer.
+    from rl_researcher.cli import console, load_all, spec_parser
 
     console()
-    p = argparse.ArgumentParser(description="where a run stands; exit 2 on a stale or failed unit")
-    p.add_argument("spec")
-    p.add_argument("--out", default=None)
-    a = p.parse_args(argv)
-    config = load_config()
-    kind = kind_for(a.spec, config)
-    spec = kind.load(Path(a.spec))
-    out = Path(a.out) if a.out else out_dir_for(spec, config)
+    a = spec_parser("where a run stands; exit 2 on a stale or failed unit").parse_args(argv)
+    _config, kind, spec, out = load_all(a.spec, a.out)
     return print_status(run_status(spec, kind, out))
 
 
