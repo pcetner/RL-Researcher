@@ -277,3 +277,20 @@ def test_two_writers_never_mint_the_same_finding_id(tmp_path):
     ids = [r.id for r in Ledger(path).rows]
     assert len(ids) == n, f"{n} rows written, {len(ids)} on file"
     assert len(set(ids)) == n, f"duplicate ids: {sorted(ids)}"
+
+
+def test_the_state_page_is_built_by_the_writer_like_every_other_artefact(project):
+    """It was assembled here as a list of strings, so the `STATE` layout declared five regions
+    that nothing emitted and this was the one document whose shape was never checked against
+    its own kind."""
+    from rl_researcher.artefacts.layouts import LAYOUTS, check_layout
+    from rl_researcher.regions import find
+
+    _finish_a_run(project)
+    assert state.main([]) == 0
+    text = (project / "docs" / "STATE.md").read_text(encoding="utf-8")
+
+    assert check_layout(text, "state") == []
+    regions = {r.arg for r in find(text) if r.kind == "generated"}
+    assert regions == {s.region for s in LAYOUTS["state"].sections}
+    assert "kind=state" in text.split("\n", 1)[0]

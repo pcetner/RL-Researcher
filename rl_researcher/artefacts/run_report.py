@@ -421,10 +421,5 @@ def write_report(spec: Any, summary: Dict[str, Any], out: Path, *, kind: Any = N
     out = Path(out)
     art = build(spec, summary, out, kind=kind, ledger=ledger,
                 command=command or f"python -m rl_researcher.report {spec.name}")
-    path = write(art, out / "README.md", subtitle=f"{spec.name} · {_data(summary)}")
-    html = path.with_suffix(".html")
-    if html.name != "report.html":
-        import shutil
-
-        shutil.move(str(html), str(out / "report.html"))
-    return path
+    return write(art, out / "README.md", subtitle=f"{spec.name} · {_data(summary)}",
+                 html_path=out / "report.html")
