@@ -27,10 +27,14 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from rl_researcher import atomic, charts
 from rl_researcher import plotstyle as ps
+from rl_researcher.blocks import (ArmCell, ArmTable, Block, DoneUnit, DoneUnits, Failure,
+                                  Failures, Footer, IndexEntry, IndexTable, Ladder, Lead,
+                                  LiveUnit, LiveUnits, LogLine, MetricLane, MetricLanes, Page,
+                                  PageFoot, Progress, QueuedUnits, RunLog, Tiles)
+from rl_researcher.blocks.live import duration
 from rl_researcher.kinds import LogVocab, RunKind
 from rl_researcher.spec import RunSpec
 from rl_researcher.status import RunStatus, run_status
-from rl_researcher.style import BASE_CSS, LEGACY_DASHBOARD_CSS, THEME_BUTTONS, THEME_SCRIPT
 from rl_researcher.units import UnitState, read_json
 
 REFRESH_SECONDS = 15
@@ -289,8 +293,10 @@ def periodic_writer(render: Renderer, target: Path, *, log: Optional[Callable[[s
 # kind's ``registry`` for those now, and its ``curves(spec)`` for which series to draw. A kind
 # that declares neither still gets a page: names fall back to the metric's own, and the curve
 # columns simply do not appear.
-
-LOG_NOTE = '<span class="logs">log scale</span>'
+#
+# Each returns blocks rather than HTML. That is what puts the live page under the same four
+# rules as every other artefact -- every class declared, nothing fetched, and the page never
+# saying a number the file does not. The drawing did not change; where it is written did.
 
 
 def _title(kind: RunKind, name: str) -> str:
@@ -298,99 +304,66 @@ def _title(kind: RunKind, name: str) -> str:
     return reg.title(name) if reg is not None else name
 
 
-def duration(seconds: Optional[float]) -> str:
-    if seconds is None or (isinstance(seconds, float) and seconds != seconds):
-        return "—"
-    s = int(max(seconds, 0))
-    if s < 90:
-        return f"{s}s"
-    if s < 5400:
-        return f"{s // 60}m"
-    return f"{s // 3600}h {(s % 3600) // 60:02d}m"
-
-
-def bubble(kind: RunKind, metric: Any, *, up: bool = False) -> str:
-    """What a metric is, the way a reference would put it: expression, definition, reason.
-
-    The definition comes from the kind's registry and the reason from the spec's own ``why`` --
-    both already written, neither invented for the page -- and the expression is typeset rather
-    than spelled out, because a ratio written in slashes and pipes is a sentence pretending to
-    be maths.
-    """
-    from rl_researcher.mathtex import formula_svg
-
+def _lane_of(spec: RunSpec, kind: RunKind, metric: Any, units: Sequence[UnitState],
+             index: int, total: int) -> MetricLane:
     reg = getattr(kind, "registry", None)
-    parts = [f'<b>{html.escape(_title(kind, metric.name))}</b>']
-    tex = formula_svg(reg.formula(metric.name), scale=1.15) if reg is not None else ""
-    if tex:
-        parts.append(f'<span class="bmath">{tex}</span>')
-    target = charts.target_label(metric.bar, metric.direction)
-    if target:
-        parts.append(f'<span class="t">{target}</span>')
-    what = html.escape(reg.description(metric.name) if reg is not None else "")
-    if what:
-        parts.append(f'<span class="w">{what}</span>')
-    if getattr(metric, "why", ""):
-        parts.append(f'<span class="y">{html.escape(metric.why)}</span>')
-    return f'<span class="bubble{" up" if up else ""}">{"".join(parts)}</span>'
+    values = [(u.arm, float(metrics_of(u).get(metric.name, float("nan"))),
+               f"{u.arm} seed {u.seed}: "
+               f'{charts.fmt(float(metrics_of(u).get(metric.name, float("nan"))))}')
+              for u in units]
+    # A diverged seed is excluded from the mean and counted instead: averaging it in gave
+    # 9.2e19, which is not this metric's central value in any sense a reader could use.
+    finite = [v for _, v, _ in values if math.isfinite(v)]
+    gone = sum(1 for _, v, _ in values if math.isinf(v))
+    return MetricLane(
+        name=metric.name,
+        title=_title(kind, metric.name),
+        target=charts.target_label(metric.bar, metric.direction),
+        formula=reg.formula(metric.name) if reg is not None else "",
+        definition=reg.description(metric.name) if reg is not None else "",
+        why=getattr(metric, "why", "") or "",
+        bar=metric.bar,
+        direction=metric.direction,
+        log=charts.is_log([v for _, v, _ in values], metric.bar),
+        # The last rows would push a downward bubble past the panel, which clips it.
+        up=index >= max(total - 4, total // 2),
+        values=tuple(values),
+        seeds=tuple(int(u.seed) for u in units),
+        mean=charts.fmt(sum(finite) / len(finite)) if finite else "—",
+        diverged=gone,
+    )
 
 
-def metric_rows(spec: RunSpec, kind: RunKind, units: Sequence[UnitState],
-                order: Sequence[str]) -> str:
+def metric_lanes(spec: RunSpec, kind: RunKind, data: DashboardData) -> List[Any]:
     """The scorecard: one row per registered metric, its lane drawn as a small SVG.
 
     Rendered even before a unit finishes -- names, targets and empty lanes -- because a panel
     that does not exist yet cannot tell a reader what is being measured.
     """
-    rows = []
+    finished = data.with_metrics()
     total = len(spec.metrics)
-    for i, m in enumerate(spec.metrics):
-        values = [(u.arm, float(metrics_of(u).get(m.name, float("nan"))),
-                   f"{u.arm} seed {u.seed}: "
-                   f'{charts.fmt(float(metrics_of(u).get(m.name, float("nan"))))}')
-                  for u in units]
-        seeds = [int(u.seed) for u in units]
-        # A diverged seed is excluded from the mean and counted instead: averaging it in gave
-        # 9.2e19, which is not this metric's central value in any sense a reader could use.
-        finite = [v for _, v, _ in values if math.isfinite(v)]
-        gone = sum(1 for _, v, _ in values if math.isinf(v))
-        mean = charts.fmt(sum(finite) / len(finite)) if finite else "—"
-        if gone:
-            mean += f'<span class="sp">{gone} diverged</span>'
-        log = charts.is_log([v for _, v, _ in values], m.bar)
-        # The last rows would push a downward bubble past the panel, which clips it.
-        up = i >= max(total - 4, total // 2)
-        title = _title(kind, m.name)
-        rows.append(
-            f'<div class="mrow">'
-            f'<div class="mname">{html.escape(title)}{bubble(kind, m, up=up)}</div>'
-            f'<div class="mtarget">{charts.target_label(m.bar, m.direction) or "Reported"}'
-            f'{LOG_NOTE if log else ""}</div>'
-            f'<div class="mtrack">'
-            f'{charts.track(values, m.bar, m.direction, list(order), label=title, seeds=seeds)}'
-            f'</div>'
-            f'<div class="mval">{mean}</div>'
-            f'</div>')
-    return f'<div class="mrows">{"".join(rows)}</div>'
+    lanes = [_lane_of(spec, kind, m, finished, i, total) for i, m in enumerate(spec.metrics)]
+    counts = {arm: (sum(1 for u in finished if u.arm == arm), len(spec.seeds))
+              for arm in data.order}
+    return [MetricLanes(title="registered metrics · hover for details", lanes=tuple(lanes),
+                        order=tuple(data.order), counts=counts)]
 
 
-def arm_table(spec: RunSpec, kind: RunKind, agg: Dict[str, Any], order: Sequence[str]) -> str:
-    """Arms down the side, metrics across the top: mean, spread, pass mark, best marked.
+def arm_panel(spec: RunSpec, kind: RunKind, data: DashboardData) -> List[Any]:
+    """Arms down the side, metrics across the top: mean, spread, pass mark, best marked."""
+    from rl_researcher.artefacts.report import aggregate, judge
 
-    This is not a second set of tracks. The scorecard above places every unit by position, so a
-    positional chart of the same numbers aggregated would be the same picture twice. A table
-    makes a different kind of statement -- exact values, side by side, comparable down a
-    column -- which is the one thing the scorecard cannot do.
-    """
-    from rl_researcher.artefacts.report import judge
-
+    finished = data.with_metrics()
+    if not finished:
+        return []
+    agg = aggregate([u.result or {} for u in finished], [m.name for m in spec.metrics])
     metrics = [m for m in spec.metrics if m.bar is not None]
-    present = [a for a in order if a in agg]
+    present = [a for a in data.order if a in agg]
     if not metrics or not present:
-        return ""
+        return []
 
-    def value(name: str, metric: Any) -> Optional[Tuple[float, float, int, int]]:
-        mean, std, n, div = agg[name].get(metric.name, (float("nan"), float("nan"), 0, 0))
+    def value(arm: str, metric: Any) -> Optional[Tuple[float, float, int, int]]:
+        mean, std, n, div = agg[arm].get(metric.name, (float("nan"), float("nan"), 0, 0))
         return (mean, std, n, div) if n and not math.isnan(mean) else None
 
     best: Dict[str, str] = {}
@@ -404,61 +377,47 @@ def arm_table(spec: RunSpec, kind: RunKind, agg: Dict[str, Any], order: Sequence
             pick = (min if m.direction == "lower" else max)(scored, key=lambda kv: kv[1])
             best[m.name] = pick[0]
 
-    heads = "".join(
-        f'<th class="mid">{html.escape(_title(kind, m.name))}'
-        f'<span class="th2">{charts.target_label(m.bar, m.direction) or "Reported"}</span></th>'
-        for m in metrics)
     rows = []
-    for name in present:
+    for arm in present:
         cells, seeds = [], 0
         for m in metrics:
-            got = value(name, m)
+            got = value(arm, m)
             if not got:
-                cells.append('<td class="num mid of">not computed</td>')
+                cells.append(ArmCell())
                 continue
             mean, std, n, div = got
             seeds = max(seeds, n + div)
-            ok = judge(m, mean, div, arm=name)
-            spread = (f'<span class="sp">± {charts.fmt(std)}</span>'
-                      if n > 1 and not math.isnan(std) else "")
-            if div:
-                spread += f'<span class="sp">{div} of {n + div} diverged</span>'
-            crown = '<span class="crown">best</span>' if best.get(m.name) == name else ""
+            ok = judge(m, mean, div, arm=arm)
             # Three outcomes, not two. `None` is the reference arm of a comparison, which is
             # never judged against itself; printing a cross there marks a number that was
             # never on trial.
             tone, mark = ("ok", "✓") if ok else (("no", "✗") if ok is False else ("of", ""))
-            cells.append(f'<td class="num mid {tone}">{charts.fmt(mean)}'
-                         f'<span class="mark">{mark}</span>{spread}{crown}</td>')
-        rows.append(f'<tr><td class="cell">{charts.glyph(name, list(order))}{html.escape(name)}'
-                    f'<span class="seed">{seeds} seed{"" if seeds == 1 else "s"}</span></td>'
-                    f'{"".join(cells)}</tr>')
-    noun = html.escape(getattr(kind, "arm_noun", "arm"))
-    return f'<table class="vtable"><tr><th>{noun}</th>{heads}</tr>{"".join(rows)}</table>'
+            cells.append(ArmCell(
+                text=charts.fmt(mean), tone=tone, mark=mark,
+                spread=f"± {charts.fmt(std)}" if n > 1 and not math.isnan(std) else "",
+                diverged=f"{div} of {n + div} diverged" if div else "",
+                best=best.get(m.name) == arm))
+        rows.append((arm, seeds, tuple(cells)))
+    noun = getattr(kind, "arm_noun", "arm")
+    return [ArmTable(title=f"by {noun} · mean and spread across seeds", noun=noun,
+                     order=tuple(data.order),
+                     heads=tuple((_title(kind, m.name),
+                                  charts.target_label(m.bar, m.direction) or "Reported")
+                                 for m in metrics),
+                     rows=tuple(rows))]
 
 
-def identity(unit: UnitState, order: Sequence[str], *, best: bool = False) -> str:
-    star = '<span class="best">best</span>' if best else ""
-    return (f'<td class="cell">{charts.glyph(unit.arm, list(order), seed=int(unit.seed))}'
-            f'{html.escape(unit.arm)}<span class="seed">seed {unit.seed}</span>{star}</td>')
-
-
-def state_cell(unit: UnitState) -> str:
-    label, tone = chip(unit)
-    return f'<td><span class="chip t-{tone}">{label}</span></td>'
-
-
-def notes(unit: UnitState) -> str:
+def _notes(unit: UnitState) -> Tuple[str, ...]:
     out = []
     if unit.error:
-        out.append(html.escape(str(unit.error)))
+        out.append(str(unit.error))
     if unit.resumable and unit.checkpoint_step is not None:
         out.append(f"resumable from {unit.checkpoint_step:,}")
     if unit.resumed_from_step:
         out.append(f"resumed at {unit.resumed_from_step:,}")
     if unit.age is not None and not unit.done:
         out.append(f"updated {duration(unit.age)} ago")
-    return f'<td class="note">{"<br>".join(out)}</td>'
+    return tuple(out)
 
 
 def curves_of(spec: RunSpec, kind: RunKind) -> List[Any]:
@@ -480,58 +439,43 @@ def floors_of(spec: RunSpec, kind: RunKind) -> Dict[str, Optional[float]]:
             for c in curves_of(spec, kind)}
 
 
-def running_table(spec: RunSpec, kind: RunKind, data: DashboardData) -> str:
+def live_panel(spec: RunSpec, kind: RunKind, data: DashboardData) -> List[Any]:
     """Units still going: progress, rate, and each curve under its own name.
 
     Failed units are excluded and get :func:`failed_panel`. One sat here reading ``0.0 steps/s``
     under a heading that said it was in progress, with the reason for the failure in the notes
     column, off past the horizontal scroll at any normal width.
     """
-    order = data.order
     live = [u for u in data.units if not u.done and u.status not in ("not started", "failed")]
     if not live:
-        return ""
+        return []
     curves = curves_of(spec, kind)
     floors = floors_of(spec, kind)
-    heads = "".join(f'<th class="mid">{html.escape(c.title)}</th>' for c in curves)
-    rows = []
+    units = []
     for u in live:
-        colour = ps.variant_color(u.arm, list(order))
-        step, cap = int(u.step or 0), int(u.max_steps or spec.budget.max_steps or 1)
-        pct = 100.0 * step / max(cap, 1)
         history = history_of(u)
         last = last_of(u, [c.key for c in curves])
-        cols = []
-        for c in curves:
-            series = history.get(c.key, [])
-            svg = charts.curve(series, colour=colour, label=c.title, steps=step,
-                               floor=floors.get(c.key))
-            got = last.get(c.key)
-            shown = "—" if got is None or float(got) != float(got) else charts.fmt(float(got))
-            first = f"{charts.fmt(float(series[0]))} → " if len(series) >= 2 else ""
-            cols.append(f'<td class="curve">{svg}'
-                        f'<span class="range">{first}<b>{shown}</b></span></td>')
-        rows.append(f"""
-    <tr>{identity(u, order)}{state_cell(u)}
-      <td class="num">{step:,}<span class="of"> / {cap:,}</span>
-        <div class="track"><i style="width:{pct:.1f}%;background:{colour}"></i></div></td>
-      <td class="num">{float(u.rate or 0.0):.1f}<span class="of"> steps/s</span></td>
-      <td class="num">{duration(u.eta_seconds)}</td>
-      {''.join(cols)}{notes(u)}
-    </tr>""")
-    return (f'<div class="panel scroll"><h2>in progress</h2><table>'
-            f'<tr><th>unit</th><th>state</th><th>step</th><th>rate</th><th>time left</th>'
-            f'{heads}<th></th></tr>{"".join(rows)}</table></div>')
+        state, tone = chip(u)
+        units.append(LiveUnit(
+            arm=u.arm, seed=int(u.seed), state=state, tone=tone,
+            step=int(u.step or 0),
+            max_steps=int(u.max_steps or spec.budget.max_steps or 1),
+            rate=float(u.rate or 0.0), eta_seconds=u.eta_seconds,
+            colour=ps.variant_color(u.arm, list(data.order)),
+            curves=tuple((c.title, tuple(history.get(c.key, [])), last.get(c.key),
+                          floors.get(c.key)) for c in curves),
+            notes=_notes(u)))
+    return [LiveUnits(title="in progress", units=tuple(units), order=tuple(data.order),
+                      curve_titles=tuple(c.title for c in curves))]
 
 
-def finished_table(spec: RunSpec, kind: RunKind, data: DashboardData) -> str:
+def done_panel(spec: RunSpec, kind: RunKind, data: DashboardData) -> List[Any]:
     """Units that finished: one column per registered bar-metric, with its pass mark."""
     from rl_researcher.artefacts.report import judge
 
-    order = data.order
     done = data.with_metrics()
     if not done:
-        return ""
+        return []
     bars = [m for m in spec.metrics if m.bar is not None]
     primary = bars[0] if bars else None
     if primary is not None:
@@ -544,81 +488,63 @@ def finished_table(spec: RunSpec, kind: RunKind, data: DashboardData) -> str:
         done = sorted(done, key=rank)
     curves = curves_of(spec, kind)
     floors = floors_of(spec, kind)
-    curve_heads = "".join(f'<th class="mid">{html.escape(c.title)}</th>' for c in curves)
-    heads = "".join(f'<th class="mid">{html.escape(_title(kind, m.name))}'
-                    f'<span class="th2">{charts.target_label(m.bar, m.direction)}</span></th>'
-                    for m in bars)
-    rows = []
-    for idx, u in enumerate(done):
-        colour = ps.variant_color(u.arm, list(order))
+    units = []
+    for u in done:
         history = history_of(u)
-        drawn = "".join(
-            f'<td class="curve">'
-            f"{charts.curve(history.get(c.key, []), colour=colour, label=c.title, floor=floors.get(c.key), steps=int(u.step or 0))}"
-            f'</td>' for c in curves)
-        cols = []
+        state, tone = chip(u)
+        cells = []
         for m in bars:
             v = float(metrics_of(u).get(m.name, float("nan")))
             if v != v:
-                cols.append('<td class="num mid of">n/a</td>')
+                cells.append(("n/a", "of", ""))
                 continue
             # One unit, so a non-finite value is this unit's own divergence rather than a count
             # across seeds. charts.fmt renders it "diverged"; judge refuses it either way.
             ok = judge(m, v, 0 if math.isfinite(v) else 1, arm=u.arm)
-            tone, mark = ("ok", "✓") if ok else (("no", "✗") if ok is False else ("of", ""))
-            cols.append(f'<td class="num mid {tone}">{charts.fmt(v)}'
-                        f'<span class="mark">{mark}</span></td>')
-        top = idx == 0 and len(done) > 1
-        rows.append(f"""
-    <tr{' class="bestrow"' if top else ""}>{identity(u, order, best=top)}{state_cell(u)}
-      <td class="num">{duration(u.elapsed_seconds)}</td>{''.join(cols)}{drawn}{notes(u)}
-    </tr>""")
-    return (f'<div class="panel scroll"><h2>finished</h2><table>'
-            f'<tr><th>unit</th><th>state</th><th>time</th>{heads}{curve_heads}<th></th></tr>'
-            f'{"".join(rows)}</table></div>')
+            tone_c, mark = ("ok", "✓") if ok else (("no", "✗") if ok is False else ("of", ""))
+            cells.append((charts.fmt(v), tone_c, mark))
+        units.append(DoneUnit(
+            arm=u.arm, seed=int(u.seed), state=state, tone=tone,
+            seconds=u.elapsed_seconds, colour=ps.variant_color(u.arm, list(data.order)),
+            step=int(u.step or 0), cells=tuple(cells),
+            curves=tuple((c.title, tuple(history.get(c.key, [])), floors.get(c.key))
+                         for c in curves),
+            notes=_notes(u)))
+    return [DoneUnits(title="finished", units=tuple(units), order=tuple(data.order),
+                      heads=tuple((_title(kind, m.name),
+                                   charts.target_label(m.bar, m.direction)) for m in bars),
+                      curve_titles=tuple(c.title for c in curves))]
 
 
-def failed_panel(data: DashboardData) -> str:
+def failed_panel(data: DashboardData) -> List[Any]:
     """Units that died, with the reason first.
 
     Its own panel, in the reading order between what is running and what is queued -- a failure
     has to be noticed without the page dropping everything else for it. The whole-run chip at
     the top already says FAILED; this says which unit, why, and where to resume from.
     """
-    order = data.order
     dead = [u for u in data.units if u.failed]
     if not dead:
-        return ""
-    rows = []
+        return []
+    units = []
     for u in dead:
-        label, tone = chip(u)
+        state, tone = chip(u)
         where = [f"stopped at {int(u.step or 0):,} of {int(u.max_steps or 0):,}"]
         if u.resumable and u.checkpoint_step is not None:
             where.append(f"resumable from {u.checkpoint_step:,}")
         if u.age is not None:
             where.append(f"updated {duration(u.age)} ago")
-        rows.append(
-            f'<div class="failrow">'
-            f'<div class="failwho">{charts.glyph(u.arm, list(order), seed=int(u.seed))}'
-            f'{html.escape(u.arm)}<span class="seed">seed {u.seed}</span>'
-            f'<span class="chip t-{tone}">{label}</span></div>'
-            f'<div class="failmsg">{html.escape(str(u.error or "no reason recorded"))}</div>'
-            f'<div class="failnote">{" · ".join(where)}</div></div>')
-    plural = "" if len(dead) == 1 else "s"
-    return (f'<div class="panel"><h2>failed · {len(dead)} unit{plural}</h2>'
-            f'<div class="fails">{"".join(rows)}</div></div>')
+        units.append(Failure(arm=u.arm, seed=int(u.seed), state=state, tone=tone,
+                             error=str(u.error or "no reason recorded"), where=tuple(where)))
+    return [Failures(units=tuple(units), order=tuple(data.order))]
 
 
-def queued_panel(data: DashboardData) -> str:
+def queued_panel(data: DashboardData) -> List[Any]:
     """Units not started yet — their own box, so the in-progress table ends cleanly."""
-    order = data.order
-    queued = [u for u in data.units if u.status == "not started"]
+    queued = [(u.arm, int(u.seed)) for u in data.units if u.status == "not started"]
     if not queued:
-        return ""
-    chips = "".join(f'<span class="qchip">{charts.glyph(u.arm, list(order))}'
-                    f'{html.escape(u.arm)}<i>seed {u.seed}</i></span>' for u in queued)
-    return (f'<div class="panel"><h2>queued · {len(queued)}</h2>'
-            f'<div class="queued">{chips}</div></div>')
+        return []
+    return [QueuedUnits(units=tuple(queued), order=tuple(data.order))]
 
 
 def _rung(spec: RunSpec, kind: RunKind, unit: UnitState) -> str:
@@ -630,7 +556,7 @@ def _rung(spec: RunSpec, kind: RunKind, unit: UnitState) -> str:
     """
     state, _tone = chip(unit)
     if state == "failed":
-        return html.escape(str(unit.error or "no reason recorded").splitlines()[0][:70])
+        return str(unit.error or "no reason recorded").splitlines()[0][:70]
     if state in ("done", "incomplete"):
         primary = next((m.name for m in spec.metrics if m.bar is not None),
                        spec.metrics[0].name if spec.metrics else "")
@@ -639,56 +565,33 @@ def _rung(spec: RunSpec, kind: RunKind, unit: UnitState) -> str:
         if state == "incomplete":
             bits.insert(0, f"{int(unit.step or 0):,}/{int(unit.max_steps or 0):,}")
         bits.append(duration(unit.elapsed_seconds))
-        return html.escape(" · ".join(b for b in bits if b))
+        return " · ".join(b for b in bits if b)
     if state in ("running", "stale"):
         bits = [f"{int(unit.step or 0):,}/{int(unit.max_steps or 0):,}"]
         if unit.rate:
             bits.append(f"{float(unit.rate):.1f}/s")
         bits.append(f"quiet {duration(unit.age)}" if state == "stale"
                     else f"eta {duration(unit.eta_seconds)}")
-        return html.escape(" · ".join(bits))
+        return " · ".join(bits)
     steps = int(unit.max_steps or spec.budget.max_steps or 0)
-    return html.escape(f"{steps:,} {getattr(kind, 'step_noun', 'step')}s")
+    return f"{steps:,} {getattr(kind, 'step_noun', 'step')}s"
 
 
-def ladder(spec: RunSpec, kind: RunKind, data: DashboardData) -> str:
+def ladder(spec: RunSpec, kind: RunKind, data: DashboardData) -> List[Any]:
     """Every unit as a grid: one row per arm, one column per seed.
-
-    The shape of a run is the shape of the argument it makes, so a page can draw it that way
-    instead of as twelve rows of a table. A reader sees at a glance whether a whole arm is
-    missing -- which withholds a comparison -- or one seed of each, which does not.
 
     Not in the default page: it says the same things the running, failed, queued and finished
     tables say, more compactly and with less room for each. A kind names one or the other.
     """
-    seeds = list(spec.seeds)
-    by_key = {(u.arm, int(u.seed)): u for u in data.units}
-    # Sized from the seed count rather than `auto-fit`, which let the columns fall below the
-    # width their contents need and clipped them. Below `min-width` the panel scrolls sideways,
-    # which is the honest failure: a number pushed off-screen is worse than one you scroll to.
-    cols = (f'grid-template-columns:minmax(112px,168px) '
-            f'repeat({len(seeds)},minmax(124px,1fr));'
-            f'min-width:{112 + 128 * len(seeds)}px')
-    head = "".join(f'<div class="lhead">seed {s}</div>' for s in seeds)
-    noun = html.escape(getattr(kind, "arm_noun", "arm"))
-    rows = [f'<div class="lrow" style="{cols}"><div class="lhead">{noun}</div>{head}</div>']
-    for arm in data.order:
-        cells = []
-        for seed in seeds:
-            unit = by_key.get((arm, int(seed)))
-            if unit is None:
-                continue
-            state, tone = chip(unit)
-            cells.append(f'<div class="lcell{" q" if state == "queued" else ""}">'
-                         f'<span class="chip t-{tone}">{html.escape(state)}</span>'
-                         f'<span class="lwhat">{_rung(spec, kind, unit)}</span></div>')
-        rows.append(f'<div class="lrow" style="{cols}"><div class="larm">'
-                    f'{charts.glyph(arm, list(data.order))}{html.escape(arm)}</div>'
-                    f'{"".join(cells)}</div>')
-    return (f'<div class="panel"><h2>ladder · {len(data.order)} {noun}s × {len(seeds)} seeds</h2>'
-            f'<div class="ladder scroll">{"".join(rows)}</div></div>')
+    cells = {}
+    for u in data.units:
+        state, tone = chip(u)
+        cells[(u.arm, int(u.seed))] = (state, tone, _rung(spec, kind, u))
+    return [Ladder(noun=getattr(kind, "arm_noun", "arm"), seeds=tuple(spec.seeds),
+                   order=tuple(data.order), cells=cells)]
 
-def headline(spec: RunSpec, kind: RunKind, data: DashboardData) -> str:
+
+def lead_panel(spec: RunSpec, kind: RunKind, data: DashboardData) -> List[Any]:
     """The best finished unit, as chips rather than a sentence.
 
     Four numbers and two pass marks do not belong in prose. The floor travels with the win: a
@@ -700,34 +603,56 @@ def headline(spec: RunSpec, kind: RunKind, data: DashboardData) -> str:
 
     primary = next((m for m in spec.metrics if m.bar is not None), None)
     if primary is None:
-        return ""
+        return []
     # isfinite, not "not isnan": a diverged unit reports inf, and on a "higher is better"
     # primary metric max() would have crowned it the headline of the whole run.
     done = [u for u in data.with_metrics()
             if math.isfinite(float(metrics_of(u).get(primary.name, float("nan"))))]
     if not done:
-        return ""
+        return []
     best = (min if primary.direction == "lower" else max)(
         done, key=lambda u: float(metrics_of(u)[primary.name]))
 
     floor_names = {c.floor_metric for c in curves_of(spec, kind) if c.floor_metric}
     floor = next((m for m in spec.metrics if m.name in floor_names), None)
-    chips = []
+    stats = []
     for m in [primary] + ([floor] if floor is not None and floor is not primary else []):
         if m is None or m.bar is None:
             continue
         v = float(metrics_of(best).get(m.name, float("nan")))
         if not math.isfinite(v):
             continue
-        ok = judge(m, v, arm=best.arm)
-        chips.append(f'<span class="stat {"ok" if ok else "no"}">'
-                     f'<span class="n">{html.escape(_title(kind, m.name))}</span>'
-                     f'<b>{v:.3f}</b>'
-                     f'<span class="n">{charts.target_label(m.bar, m.direction)}</span></span>')
-    who = (f'<span class="k">Current best</span>'
-           f'<span class="who">{charts.glyph(best.arm, list(data.order))}'
-           f'{html.escape(best.arm)}<i>seed {best.seed}</i></span>')
-    return who + "".join(chips)
+        stats.append((_title(kind, m.name), v, charts.target_label(m.bar, m.direction),
+                      bool(judge(m, v, arm=best.arm))))
+    return [Lead(arm=best.arm, seed=int(best.seed), order=tuple(data.order), stats=tuple(stats))]
+
+
+def log_lines(lines: Sequence[str], vocab: LogVocab,
+              order: Optional[Sequence[str]] = None, keep: int = 12) -> List[LogLine]:
+    """The tail as structured lines: a step line in its parts, anything else with its tone."""
+    marks = vocab.marks or {}
+    step_re = re.compile(vocab.step_line) if vocab.step_line else None
+    out: List[LogLine] = []
+    for raw in pick_log(lines, vocab, keep):
+        tone = next((t for token, t in marks.items() if token in raw), "")
+        m = step_re.match(raw) if step_re is not None else None
+        if m is not None:
+            got = m.groupdict()
+            unit = got.get("unit") or ""
+            out.append(LogLine(
+                stamp=got.get("ts") or "", unit=unit,
+                colour=ps.variant_color(unit.rsplit(" seed", 1)[0], list(order or [])),
+                step=got.get("step") or "", max_steps=got.get("max") or "",
+                rest=got.get("rest") or ""))
+            continue
+        stamp = re.match(r"(\d\d:\d\d:\d\d)\s(.*)", raw, re.S)
+        out.append(LogLine(stamp=stamp.group(1) if stamp else "",
+                           text=stamp.group(2) if stamp else raw, tone=tone))
+    return out
+
+
+def log_panel(spec: RunSpec, kind: RunKind, data: DashboardData) -> List[Any]:
+    return [RunLog(title="log", lines=tuple(log_lines(data.log_tail, vocab_of(kind), data.order)))]
 
 
 # ── the page ──────────────────────────────────────────────────────────────────────────────
@@ -737,11 +662,10 @@ def headline(spec: RunSpec, kind: RunKind, data: DashboardData) -> str:
 # kind a panel of its own was to write a second page — which is how there came to be two, with
 # two log formatters, two page writers and two collectors between them.
 #
-# A kind names the sections it wants (``page_sections``) and may contribute its own
-# (``page_extras``). Everything else — the shell, the head, the tiles, the progress bar, the
-# foot — is the framework's, because none of it was ever project-specific.
-
-DASHBOARD_CSS = BASE_CSS + LEGACY_DASHBOARD_CSS
+# A kind names the sections it wants (``page_sections``) and may contribute its own, by
+# returning blocks from ``blocks(spec, summary, out, view)``. Everything else — the shell, the
+# head, the tiles, the progress bar, the foot — is the framework's, because none of it was ever
+# project-specific.
 
 #: Every section the framework itself draws, in the order a reader wants them: what the run
 #: found, what it is measuring, how the arms compare, what is happening now, what went wrong,
@@ -749,48 +673,15 @@ DASHBOARD_CSS = BASE_CSS + LEGACY_DASHBOARD_CSS
 DEFAULT_SECTIONS: Tuple[str, ...] = (
     "headline", "metrics", "arms", "running", "failed", "queued", "finished", "log")
 
-
-def _section_headline(spec: RunSpec, kind: RunKind, data: DashboardData) -> str:
-    lead = headline(spec, kind, data)
-    return f'<div class="lead">{lead}</div>' if lead else ""
-
-
-def _section_metrics(spec: RunSpec, kind: RunKind, data: DashboardData) -> str:
-    finished = data.with_metrics()
-    counts = {arm: (sum(1 for u in finished if u.arm == arm), len(spec.seeds))
-              for arm in data.order}
-    return (f'<div class="panel"><h2>registered metrics · hover for details</h2>'
-            f'{charts.legend(list(data.order), counts)}'
-            f'{metric_rows(spec, kind, finished, data.order)}</div>')
-
-
-def _section_arms(spec: RunSpec, kind: RunKind, data: DashboardData) -> str:
-    from rl_researcher.artefacts.report import aggregate
-
-    finished = data.with_metrics()
-    if not finished:
-        return ""
-    agg = aggregate([u.result or {} for u in finished], [m.name for m in spec.metrics])
-    table = arm_table(spec, kind, agg, data.order)
-    noun = getattr(kind, "arm_noun", "arm")
-    return (f'<div class="panel scroll"><h2>by {noun} · mean and spread across seeds</h2>'
-            f'{table}</div>') if table else ""
-
-
-def _section_log(spec: RunSpec, kind: RunKind, data: DashboardData) -> str:
-    body = format_log(data.log_tail, vocab_of(kind), data.order)
-    return f'<div class="panel"><h2>log</h2><div class="log">{body}</div></div>'
-
-
-SECTIONS: Dict[str, Callable[[RunSpec, RunKind, DashboardData], str]] = {
-    "headline": _section_headline,
-    "metrics": _section_metrics,
-    "arms": _section_arms,
-    "running": lambda spec, kind, data: running_table(spec, kind, data),
+SECTIONS: Dict[str, Callable[[RunSpec, RunKind, DashboardData], List[Any]]] = {
+    "headline": lead_panel,
+    "metrics": metric_lanes,
+    "arms": arm_panel,
+    "running": live_panel,
     "failed": lambda spec, kind, data: failed_panel(data),
     "queued": lambda spec, kind, data: queued_panel(data),
-    "finished": lambda spec, kind, data: finished_table(spec, kind, data),
-    "log": _section_log,
+    "finished": done_panel,
+    "log": log_panel,
     "ladder": ladder,
 }
 
@@ -806,96 +697,91 @@ def sections_of(kind: RunKind) -> Tuple[str, ...]:
     return tuple(str(n) for n in named) if named else DEFAULT_SECTIONS
 
 
-def section(name: str, spec: RunSpec, kind: RunKind, data: DashboardData) -> str:
-    """One named section's HTML, the kind's own before the framework's.
+def kind_blocks(kind: RunKind, spec: RunSpec, data: DashboardData, view: str,
+                out: Optional[Path] = None) -> List[Any]:
+    """What the kind wants to add to this section, through the protocol's ``blocks`` hook.
+
+    This is the hook the protocol has always declared and nothing ever called. A kind's own
+    panel is a list of blocks like any other, so it is held to the same four rules -- which is
+    the whole reason the hook takes blocks rather than the markup ``page_extras`` accepted.
+    """
+    fn = getattr(kind, "blocks", None)
+    if not callable(fn):
+        return []
+    try:
+        got = fn(spec, data.summary or {}, out or Path("."), view)
+    except Exception:  # noqa: BLE001 - a page must never take a run down
+        return []
+    return [b for b in (got or []) if isinstance(b, Block)]
+
+
+def section(name: str, spec: RunSpec, kind: RunKind, data: DashboardData,
+            out: Optional[Path] = None) -> List[Any]:
+    """One named section's blocks, the kind's own before the framework's.
 
     An unknown name renders as nothing rather than raising. A page is the artefact a person
     opens *because* something has gone wrong; it must not be the second thing to break.
     """
-    extras = getattr(kind, "page_extras", None) or {}
-    fn = extras.get(name) or SECTIONS.get(name)
+    mine = kind_blocks(kind, spec, data, name, out)
+    if mine:
+        return mine
+    fn = SECTIONS.get(name)
     if fn is None:
-        return ""
-    return fn(spec, kind, data)
+        return []
+    try:
+        return list(fn(spec, kind, data) or [])
+    except Exception:  # noqa: BLE001 - one panel must not cost the page
+        return []
 
 
-def tiles(pairs: Sequence[Tuple[str, str]]) -> str:
-    """The four big numbers across the top: value, then what it is."""
-    return ('<div class="tiles">'
-            + "".join(f'<div class="tile"><b>{v}</b><span>{html.escape(k)}</span></div>'
-                      for v, k in pairs)
-            + "</div>")
-
-
-def page_tiles(spec: RunSpec, kind: RunKind, data: DashboardData) -> str:
+def page_tiles(spec: RunSpec, kind: RunKind, data: DashboardData) -> Tiles:
     unit_noun = getattr(kind, "unit_noun", "unit")
     step_noun = getattr(kind, "step_noun", "step")
     pct = 100.0 * data.done_steps / max(data.total_steps, 1)
     done, total = data.status.done, len(data.units)
-    return tiles([
-        (f'{done}<span class="of">/{total}</span>', f"{unit_noun}s done"),
+    return Tiles(items=(
+        (f"{done}/{total}", f"{unit_noun}s done"),
         (f"{pct:.0f}%", f"of {data.total_steps:,} {step_noun}s"),
         (duration(data.elapsed_all), "compute spent"),
         (duration(data.eta_all), "projected left"),
-    ])
+    ))
 
 
-def page_foot(spec: RunSpec, kind: RunKind, data: DashboardData, *, refresh: bool) -> str:
-    e = html.escape
+def page_foot(spec: RunSpec, kind: RunKind, data: DashboardData, *, refresh: bool) -> PageFoot:
     extra = getattr(kind, "page_note", None)
-    mid = f" · {extra(spec, data)}" if callable(extra) else ""
-    when = time.strftime("%H:%M:%S")
-    tail_note = (f"refreshing every {REFRESH_SECONDS}s" if refresh
-                 else "rendered once, the run has ended")
-    return (f'<div class="foot">{e(spec.name)} · {e(str(data.device or "cpu"))}{mid} · '
-            f'<code>status</code> is the authority on liveness, not this page · '
-            f'{when}, {tail_note}</div>')
+    return PageFoot(
+        run=spec.name, device=str(data.device or "cpu"),
+        note=str(extra(spec, data)) if callable(extra) else "",
+        when=time.strftime("%H:%M:%S"),
+        tail=(f"refreshing every {REFRESH_SECONDS}s" if refresh
+              else "rendered once, the run has ended"))
 
 
-def shell(title: str, body: str, *, refresh: bool = True, extra_css: str = "",
-          defs: str = "") -> str:
-    """The whole document around a body: no request leaves it, ever.
-
-    Not one URL, font import or script src — the page has to open from a file and from a
-    share, on a machine with no network, which is exactly where a run tends to be.
-    """
-    meta = f'<meta http-equiv="refresh" content="{REFRESH_SECONDS}">' if refresh else ""
-    return f"""<!doctype html>
-<html lang="en"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">{meta}
-<title>{html.escape(title)}</title>
-<style>{DASHBOARD_CSS}{extra_css}</style>
-<script>{THEME_SCRIPT}</script></head>
-<body>{defs}<div class="wrap">
-{body}
-</div></body></html>
-"""
-
-
-def render(spec: RunSpec, kind: RunKind, data: DashboardData, *, refresh: bool = True) -> str:
+def render(spec: RunSpec, kind: RunKind, data: DashboardData, *, refresh: bool = True,
+           out: Optional[Path] = None) -> str:
     """The live page for one run.
 
     ``refresh`` asks for a self-reloading page; it is granted only while the run is still
     going. The alternative is a caller that has to remember to turn it off at the end, and the
     page it forgets on is a finished run that looks alive forever.
     """
-    e = html.escape
     refresh = refresh and data.status.state not in FINAL_STATES
-    pct = 100.0 * data.done_steps / max(data.total_steps, 1)
-    beat = (f' · updated {duration(data.heartbeat)} ago'
+    beat = (f" · updated {duration(data.heartbeat)} ago"
             if data.heartbeat is not None else "")
     defs = charts.seed_defs([(ps.variant_color(u.arm, list(data.order)), int(u.seed))
                              for u in data.units] + [(charts.SEED_KEY_COLOUR, 1)])
-    head = (f'<div class="head"><h1>{e(spec.name)}</h1>'
-            f'<span class="chip t-{data.status.tone}">{e(data.status.state)}{beat}</span>'
-            f'<span class="spacer"></span>{THEME_BUTTONS}</div>')
-    track = (f'<div class="track bigtrack">'
-             f'<i style="width:{pct:.1f}%;background:{ps.ACCENT}"></i></div>')
-    body = "\n".join([head, page_tiles(spec, kind, data), track]
-                     + [section(n, spec, kind, data) for n in sections_of(kind)]
-                     + [page_foot(spec, kind, data, refresh=refresh)])
-    return shell(f"{spec.name} · {kind.name} dashboard", body, refresh=refresh,
-                 extra_css=str(getattr(kind, "page_css", "")), defs=defs)
+    blocks: List[Any] = [page_tiles(spec, kind, data),
+                         Progress(fraction=data.done_steps / max(data.total_steps, 1),
+                                  label="budget")]
+    for name in sections_of(kind):
+        blocks += section(name, spec, kind, data, out)
+    blocks.append(page_foot(spec, kind, data, refresh=refresh))
+    page = Page(kind="dashboard", title=f"{spec.name} · {kind.name} dashboard",
+                blocks=blocks, chip_text=f"{data.status.state}{beat}",
+                chip_tone=data.status.tone,
+                refresh=REFRESH_SECONDS if refresh else None,
+                extra_css=str(getattr(kind, "page_css", "")), defs=defs)
+    return page.html()
 
 
 def write_dashboard(spec: RunSpec, kind: RunKind, out: Path, path: Optional[Path] = None,
@@ -903,7 +789,8 @@ def write_dashboard(spec: RunSpec, kind: RunKind, out: Path, path: Optional[Path
     out = Path(out)
     target = Path(path) if path else out / "dashboard.html"
     return write_page(
-        lambda *, refresh=refresh: render(spec, kind, collect(spec, kind, out), refresh=refresh),
+        lambda *, refresh=refresh: render(spec, kind, collect(spec, kind, out), refresh=refresh,
+                                          out=out),
         target, refresh=refresh)
 
 
@@ -930,7 +817,7 @@ class IndexRow:
     data: Optional[DashboardData] = None
     state: str = "not started"
     tone: str = "muted"
-    headline: str = ""
+    best: Optional[Lead] = None
     error: str = ""
 
 
@@ -955,53 +842,44 @@ def survey(config: Any) -> List[IndexRow]:
             name=spec.name, kind=kind.name, spec=spec, out=out, data=data,
             state=data.status.state if data else "not started",
             tone=data.status.tone if data else "muted",
-            headline=headline(spec, kind, data) if data else ""))
+            best=(lead_panel(spec, kind, data) or [None])[0] if data else None))
     rows.sort(key=lambda r: (STATE_RANK.get(r.state, 9), r.name))
     return rows
 
 
-def index_row(row: IndexRow, base: Path) -> str:
+def index_entry(row: IndexRow, base: Path) -> IndexEntry:
     """One line, its link relative to wherever the index itself is written.
 
     Different kinds have different output roots, so a link built by joining the run's name to
     the index's own directory resolves only for the kind whose root the index happens to sit
     in. Every other row's link is dead, which the page has no way to show.
     """
-    e = html.escape
     d = row.data
     if row.spec is None:
-        return (f'<tr><td class="cell">{e(row.name)}</td>'
-                f'<td><span class="chip t-crit">{e(row.state)}</span></td>'
-                f'<td colspan="3" class="note">{e(row.error)}</td></tr>')
-    done = f"{d.status.done}/{len(d.units)}" if d else "—"
-    pct = (100.0 * d.done_steps / max(d.total_steps, 1)) if d else 0.0
+        return IndexEntry(name=row.name, kind=row.kind, state=row.state, tone="crit",
+                          error=row.error)
     href = ""
     if d is not None and row.out is not None:
         href = os.path.relpath(row.out / "dashboard.html", base).replace(os.sep, "/")
-    link = f'<a href="{e(href)}">{e(row.name)}</a>' if href else e(row.name)
-    return f"""
-    <tr>
-      <td class="cell">{link}<span class="seed">{e(row.kind)}</span></td>
-      <td><span class="chip t-{row.tone}">{e(row.state)}</span></td>
-      <td class="num">{done}<span class="of"> units</span>
-        <div class="track"><i style="width:{pct:.1f}%;background:{ps.ACCENT}"></i></div></td>
-      <td class="num">{duration(d.eta_all) if d else '—'}</td>
-      <td class="metrics">{row.headline or '<span class="of">no finished unit yet</span>'}</td>
-    </tr>"""
+    return IndexEntry(
+        name=row.name, kind=row.kind, state=row.state, tone=row.tone, href=href,
+        done=f"{d.status.done}/{len(d.units)}" if d else "—",
+        total_pct=(100.0 * d.done_steps / max(d.total_steps, 1)) if d else 0.0,
+        eta=duration(d.eta_all) if d else "—",
+        accent=ps.ACCENT, best=row.best)
 
 
 def render_index(rows: Sequence[IndexRow], base: Path, *, title: str = "runs",
                  refresh: bool = True) -> str:
-    body = (f'<div class="head"><h1>{html.escape(title)}</h1>'
-            f'<span class="chip t-muted">{len(rows)} registered</span>'
-            f'<span class="spacer"></span>{THEME_BUTTONS}</div>'
-            f'<div class="panel scroll"><table>'
-            f'<tr><th>run</th><th>state</th><th>units</th><th>left</th><th>best so far</th></tr>'
-            f'{"".join(index_row(r, base) for r in rows)}</table></div>'
-            f'<div class="foot">Failed and stale first, then running, then finished. '
-            f'Refreshes every {REFRESH_SECONDS}s. '
-            f'Rendered {time.strftime("%H:%M:%S")}.</div>')
-    return shell(title, body, refresh=refresh)
+    page = Page(
+        kind="index", title=title,
+        chip_text=f"{len(rows)} registered", chip_tone="muted",
+        refresh=REFRESH_SECONDS if refresh else None,
+        blocks=[IndexTable(entries=tuple(index_entry(r, base) for r in rows)),
+                Footer(text=f"Failed and stale first, then running, then finished. "
+                            f"Refreshes every {REFRESH_SECONDS}s. "
+                            f"Rendered {time.strftime('%H:%M:%S')}.")])
+    return page.html()
 
 
 def write_index(config: Any, path: Optional[Path] = None, *, refresh: bool = True) -> Path:

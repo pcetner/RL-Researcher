@@ -16,7 +16,7 @@ import json  # noqa: E402
 import time  # noqa: E402
 
 from rl_researcher.artefacts.dashboard import (  # noqa: E402
-    STATE_RANK, index_row, render_index, survey, write_index)
+    STATE_RANK, index_entry, render_index, survey, write_index)
 from rl_researcher.config import load_config  # noqa: E402
 from rl_researcher.examples.toy.kind import ToyKind, write_example_spec  # noqa: E402
 from rl_researcher.units import unit_dir  # noqa: E402
@@ -43,6 +43,14 @@ def _second_kind(root):
     spec.write_text(body.replace('name = "toy-line-fit"', 'name = "other-run"')
                     .replace('kind = "toy"', 'kind = "other"'), encoding="utf-8")
     return spec
+
+
+def _cell_html(row, base) -> str:
+    """One run's line as it reaches the page. The index is a block now; a single entry is
+    still what each of these assertions is about."""
+    from rl_researcher.blocks import IndexTable
+
+    return IndexTable(entries=(index_entry(row, base),)).html()
 
 
 def _finish(out, arm="ols", seed=0, **metrics):
@@ -74,7 +82,7 @@ def test_a_link_resolves_from_wherever_the_index_is_written(project):
     base = config.path("state")
     rows = survey(config)
     for row in rows:
-        href = index_row(row, base).split('href="')[1].split('"')[0]
+        href = _cell_html(row, base).split('href="')[1].split('"')[0]
         assert (base / href).resolve() == (row.out / "dashboard.html").resolve()
         assert "\\" not in href                 # a Windows separator is not a URL
 
@@ -83,7 +91,7 @@ def test_a_run_with_nothing_on_disk_is_listed_without_a_link(project):
     config = load_config()
     row = next(r for r in survey(config) if r.name == "toy-line-fit")
     assert row.data is None and row.state == "not started"
-    assert "<a href" not in index_row(row, config.path("state"))
+    assert "<a href" not in _cell_html(row, config.path("state"))
 
 
 def test_a_spec_that_stopped_parsing_is_named_on_the_page(project):
@@ -142,7 +150,7 @@ def test_a_run_in_progress_shows_how_far_in_it_is(project):
          "updated": time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime())}), encoding="utf-8")
     row = next(r for r in survey(config) if r.name == "toy-line-fit")
     assert row.state == "running"
-    cell = index_row(row, config.path("state"))
+    cell = _cell_html(row, config.path("state"))
     assert "0/6" in cell                        # one unit started, none of the six done
     assert "width:8.3%" in cell                 # 100 of 1,200 steps
 
