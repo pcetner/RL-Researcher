@@ -133,7 +133,22 @@ toy kind reads its arms from `spec.extra["arms"]`.
 
 A kind with substantial structure of its own is better served by a `RunSpec` subclass with real
 fields, so that mistakes are caught at load time rather than at the first `KeyError` an hour into
-a run. Two rules are worth keeping when you do:
+a run. **Say which spec it reads**, so the narrowing is sound rather than a Liskov violation your
+type checker reports on every method that takes one:
+
+```python
+class StudySpec(RunSpec):
+    snapshot: str = ""
+
+class StudyKind(BaseKind[StudySpec]):
+    def units(self, spec: StudySpec) -> list[str]: ...
+```
+
+`BaseKind` and the `RunKind` protocol are generic in the spec type. The framework does not care
+which spec a kind reads and asks for `RunKind[Any]`; a kind that declares nothing gets
+`RunSpec`, which is what every kind in this package does.
+
+Two more rules are worth keeping:
 
 - refuse keys no table declares. A misspelled knob that is silently dropped runs the default and
   reports it as the setting that was asked for.

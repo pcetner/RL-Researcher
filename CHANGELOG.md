@@ -38,6 +38,10 @@ was invisible from a checkout.
 
 ### Added
 
+- `BaseKind` and `RunKind` are generic in the spec type, so a kind may declare the `RunSpec`
+  subclass the documentation recommends without violating its own base. Every such kind in the
+  first consuming project reported an override error per method, on a rule the docs told it to
+  follow; the types now express the advice.
 - `rl_researcher` in every run summary and `framework` on every ledger row: which version of
   this package computed a number. The commit already recorded is the *consuming project's*.
 - `RunContext.framework`, so a kind stamps provenance from the context rather than asking git —
