@@ -1,0 +1,115 @@
+"""The entry points, in the order a session uses them.
+
+The skills drive the framework through ``python -m rl_researcher.<verb>``, so the verbs and
+their exit codes are the contract, not the Python API. This walks the whole M1 path in a
+throwaway project: check, estimate, refuse, approve, run, status. Exit codes carry meaning
+(0 fine, 2 stale or failed, 3 gated), because a monitor and a skill both read them.
+"""
+
+import pytest
+
+pytestmark = pytest.mark.tier1
+
+from rl_researcher import approve, check, estimate, pin, run, status  # noqa: E402
+from rl_researcher.units import read_json, unit_dir  # noqa: E402
+
+SPEC = "studies/toy-line-fit.toml"
+
+
+def test_check_describes_the_registration(project, capsys):
+    assert check.main([SPEC]) == 0
+    out = capsys.readouterr().out
+    assert "toy toy-line-fit" in out and "6 unit(s)" in out and "fingerprint" in out
+
+
+def test_check_refuses_a_spec_that_registers_an_unmeasurable_metric(project, capsys):
+    p = project / "studies" / "toy-line-fit.toml"
+    p.write_text(p.read_text(encoding="utf-8").replace('name = "r2"', 'name = "vibes"', 1), encoding="utf-8")
+    assert check.main([SPEC]) == 1
+    assert "unknown metric" in capsys.readouterr().out
+
+
+def test_pin_says_plainly_that_this_kind_has_nothing_to_pin(project, capsys):
+    assert pin.main([SPEC]) == 0
+    assert "nothing to pin" in capsys.readouterr().out
+
+
+def test_the_gated_path_is_estimate_refuse_approve_run(project, capsys):
+    # 1. the estimate says it is over the line and exits 3
+    assert estimate.main([SPEC]) == 3
+    out = capsys.readouterr().out
+    assert "budget-cap" in out and "needs an approval" in out
+
+    # 2. run refuses, and leaves nothing behind
+    assert run.main([SPEC]) == 3
+    assert "over the gate line" in capsys.readouterr().out
+
+    # 3. the human says yes; the LLM records what they said
+    assert approve.main([SPEC, "--quote", "yes, go ahead", "--session", "s1"]) == 0
+    assert "approval written" in capsys.readouterr().out
+
+    # 4. now it runs, and the estimate agrees it may
+    assert estimate.main([SPEC]) == 0
+    assert "approved:" in capsys.readouterr().out
+    assert run.main([SPEC]) == 0
+
+    # 5. status is clean and the results are on disk
+    assert status.main([SPEC]) == 0
+    said = capsys.readouterr().out
+    assert "6/6 units done" in said and "state: finished" in said
+
+
+def test_a_short_run_needs_no_approval_at_all(project, capsys):
+    """The whole point of a cost gate: small work is not gated, so the LLM just does it."""
+    assert estimate.main([SPEC, "--max-seconds", "5"]) == 0
+    assert "may run now" in capsys.readouterr().out
+    assert run.main([SPEC, "--max-seconds", "5"]) == 0
+
+
+def test_approve_writes_nothing_when_the_run_is_under_the_line(tmp_path, capsys):
+    """An approval file that exists for a run nobody had to approve would make the gate's
+    own record untrustworthy."""
+    from tests.conftest import chdir, make_project
+
+    root = make_project(tmp_path / "cheap", ungated_minutes=600)
+    with chdir(root):
+        assert approve.main([SPEC, "--quote", "y"]) == 0
+        assert "no approval needed" in capsys.readouterr().out
+        assert not list((root / "studies" / "approvals").glob("*.toml"))
+
+
+def test_an_approval_needs_the_humans_own_words(project, capsys):
+    assert approve.main([SPEC, "--quote", "   "]) == 1
+    assert "quote of what the human said" in capsys.readouterr().out
+
+
+def test_status_before_anything_runs_is_not_a_failure(project, capsys):
+    """A monitor calls this on a timer; counting queued units as failures would make the exit
+    code meaningless for most of a run."""
+    assert status.main([SPEC]) == 0
+    assert "not started" in capsys.readouterr().out
+
+
+def test_status_exits_2_on_a_failed_unit(project, capsys):
+    from rl_researcher.units import mark_failed
+
+    assert run.main([SPEC, "--max-seconds", "5"]) == 0
+    cell = unit_dir(project / "docs" / "toy" / "toy-line-fit", "ols/seed0")
+    (cell / "results.json").unlink()
+    mark_failed(cell / "progress.json", RuntimeError("CUDA out of memory"))
+    assert status.main([SPEC]) == 2
+    assert "FAILED" in capsys.readouterr().out
+
+
+def test_a_run_is_resumable_from_the_same_command(project, capsys):
+    assert run.main([SPEC, "--max-seconds", "5"]) == 0
+    out = project / "docs" / "toy" / "toy-line-fit"
+    first = read_json(unit_dir(out, "ols/seed0") / "results.json")
+    assert run.main([SPEC, "--max-seconds", "5"]) == 0     # idempotent
+    assert read_json(unit_dir(out, "ols/seed0") / "results.json") == first
+
+
+def test_a_spec_can_be_named_instead_of_pathed(project, capsys):
+    """The skills say `run toy-line-fit`; the project's specs directory is searched."""
+    assert check.main(["toy-line-fit"]) == 0
+    assert "toy-line-fit" in capsys.readouterr().out
