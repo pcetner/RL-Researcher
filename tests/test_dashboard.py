@@ -9,6 +9,7 @@ toy kind. They were written against real misreadings and are kept in those terms
 """
 
 import json
+import re
 import time
 
 import pytest
@@ -19,7 +20,8 @@ pytestmark = [pytest.mark.tier1]
 from rl_researcher.artefacts.dashboard import (  # noqa: E402
     DEFAULT_VOCAB, arm_table, bubble, chip, collect, curves_of, failed_panel, finished_table,
     floors_of, format_log, headline, history_of, last_of, metric_rows, metrics_of, notes,
-    periodic_writer, pick_log, queued_panel, running_table, vocab_of, write_page)
+    page_foot, page_tiles, periodic_writer, pick_log, queued_panel, render, running_table,
+    section, vocab_of, write_dashboard, write_page)
 from rl_researcher.kinds import LogVocab  # noqa: E402
 from rl_researcher.units import unit_dir  # noqa: E402
 
@@ -501,3 +503,151 @@ def test_nothing_a_panel_writes_reaches_the_network(toy):
     ])
     for bad in ("http://", "https://", "//fonts.", "<script src", "@import"):
         assert bad not in whole, bad
+
+
+# ── the page ──────────────────────────────────────────────────────────────────────────────
+
+def test_the_page_is_the_sections_the_kind_names_in_the_order_it_names_them(toy):
+    """The two pages this replaces were each one f-string, so a kind that wanted a panel of
+    its own had to be given a second page. That is how there came to be two of everything."""
+    config, kind, spec, out = toy
+    _cell(out, "ols", 0, results=_done())
+    data = collect(spec, kind, out)
+
+    class Picky:
+        name = "picky"
+        registry = kind.registry
+        page_sections = ("log", "metrics")
+
+        def curves(self, spec):
+            return kind.curves(spec)
+
+    page = render(spec, Picky(), data)
+    assert page.index("<h2>log") < page.index("registered metrics")
+    assert "<h2>queued" not in page                   # a section not named is not drawn
+
+    normal = render(spec, kind, data)
+    assert normal.index("registered metrics") < normal.index("<h2>log")
+
+
+def test_a_kind_contributes_a_panel_of_its_own_without_a_second_page(toy):
+    config, kind, spec, out = toy
+    _cell(out, "ols", 0, results=_done())
+    data = collect(spec, kind, out)
+
+    class Extra:
+        name = "extra"
+        registry = kind.registry
+        page_sections = ("ladder", "log")
+        page_extras = {"ladder": lambda spec, kind, data:
+                       f'<div class="panel">rungs: {len(data.units)}</div>'}
+
+        def curves(self, spec):
+            return []
+
+    page = render(spec, Extra(), data)
+    assert "rungs: 6" in page
+    assert page.index("rungs:") < page.index("<h2>log")
+
+
+def test_a_section_name_nothing_defines_renders_as_nothing(toy):
+    """A page is the artefact a person opens *because* something has gone wrong. It must not
+    be the second thing to break."""
+    config, kind, spec, out = toy
+    data = collect(spec, kind, out)
+    assert section("no-such-panel", spec, kind, data) == ""
+
+    class Typo:
+        name = "typo"
+        registry = kind.registry
+        page_sections = ("mterics", "log")
+
+        def curves(self, spec):
+            return []
+
+    assert "<h2>log" in render(spec, Typo(), data)
+
+
+def test_the_tiles_count_in_the_kinds_own_nouns(toy):
+    """One page said cells and steps, the other arms and decisions, and that was the whole of
+    the difference between them at the top of the page."""
+    config, kind, spec, out = toy
+    _cell(out, "ols", 0, results=_done())
+    data = collect(spec, kind, out)
+    assert "units done" in page_tiles(spec, kind, data)
+
+    class Loopish:
+        name = "loop"
+        registry = kind.registry
+        unit_noun = "arm"
+        step_noun = "decision"
+
+    got = page_tiles(spec, Loopish(), data)
+    assert "arms done" in got and "decisions" in got and "steps" not in got
+
+
+def test_the_foot_says_what_the_kind_wants_it_to_and_points_at_status(toy):
+    config, kind, spec, out = toy
+    data = collect(spec, kind, out)
+
+    class Pinned:
+        name = "pinned"
+        registry = kind.registry
+
+        def page_note(self, spec, data):
+            return "snapshot <code>abc123def456</code>"
+
+    foot = page_foot(spec, Pinned(), data, refresh=True)
+    assert "abc123def456" in foot
+    assert "<code>status</code>" in foot               # the page is not the authority on liveness
+    assert "refreshing every" in foot
+    assert "rendered once" in page_foot(spec, kind, data, refresh=False)
+
+
+def test_a_page_rendered_after_the_run_does_not_reload_itself(toy):
+    """A finished page that keeps reloading is a page that looks alive."""
+    config, kind, spec, out = toy
+    data = collect(spec, kind, out)
+    assert "http-equiv=\"refresh\"" in render(spec, kind, data, refresh=True)
+    assert "http-equiv=\"refresh\"" not in render(spec, kind, data, refresh=False)
+
+
+def test_the_whole_page_fetches_nothing(toy):
+    """It has to open from a file and from a share, on a machine with no network -- which is
+    where a run tends to be."""
+    config, kind, spec, out = toy
+    _cell(out, "ols", 0, results=_done())
+    _cell(out, "ols", 1, progress=_beat(status="failed", error="boom"))
+    _cell(out, "noisy", 0, progress=_beat())
+    page = render(spec, kind, collect(spec, kind, out))
+    for bad in ("http://", "https://", "//fonts.", "<script src", "@import"):
+        assert bad not in page, bad
+    # `url(#...)` is a reference to a pattern defined in this same document; a `url(` with a
+    # scheme after it would not be.
+    assert not re.search(r"url\(\s*['\"]?[a-z]+:", page)
+
+
+def test_the_theme_script_is_opened_exactly_once(toy):
+    """It used to carry its own tags and the callers wrapped it anyway, so the browser read
+    the literal text `<script>` as the first token of the program."""
+    config, kind, spec, out = toy
+    page = render(spec, kind, collect(spec, kind, out))
+    assert page.count("<script>") == 1 and page.count("</script>") == 1
+    assert page.startswith("<!doctype html>")
+
+
+def test_write_dashboard_lands_beside_the_run_and_is_written_whole(toy):
+    config, kind, spec, out = toy
+    _cell(out, "ols", 0, results=_done())
+    target = write_dashboard(spec, kind, out)
+    assert target == out / "dashboard.html"
+    assert target.read_text(encoding="utf-8").rstrip().endswith("</html>")
+    assert not list(out.glob("*.tmp*"))                # nothing half-written left behind
+
+
+def test_every_panel_renders_before_a_single_unit_has_started(toy):
+    """The emptiest possible run is the one a person is most likely to open the page on."""
+    config, kind, spec, out = toy
+    page = render(spec, kind, collect(spec, kind, out))
+    assert "registered metrics" in page and "queued" in page
+    assert "not started" in page

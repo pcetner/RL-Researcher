@@ -29,6 +29,7 @@ from rl_researcher import plotstyle as ps
 from rl_researcher.kinds import LogVocab, RunKind
 from rl_researcher.spec import RunSpec
 from rl_researcher.status import RunStatus, run_status
+from rl_researcher.style import BASE_CSS, LEGACY_DASHBOARD_CSS, THEME_BUTTONS, THEME_SCRIPT
 from rl_researcher.units import UnitState, read_json
 
 REFRESH_SECONDS = 15
@@ -650,3 +651,172 @@ def headline(spec: RunSpec, kind: RunKind, data: DashboardData) -> str:
            f'<span class="who">{charts.glyph(best.arm, list(data.order))}'
            f'{html.escape(best.arm)}<i>seed {best.seed}</i></span>')
     return who + "".join(chips)
+
+
+# ── the page ──────────────────────────────────────────────────────────────────────────────
+#
+# A page is an ordered list of named sections and nothing else. That shape exists because the
+# two dashboards this replaces were each a single 60-line f-string, so the only way to give a
+# kind a panel of its own was to write a second page — which is how there came to be two, with
+# two log formatters, two page writers and two collectors between them.
+#
+# A kind names the sections it wants (``page_sections``) and may contribute its own
+# (``page_extras``). Everything else — the shell, the head, the tiles, the progress bar, the
+# foot — is the framework's, because none of it was ever project-specific.
+
+DASHBOARD_CSS = BASE_CSS + LEGACY_DASHBOARD_CSS
+
+#: Every section the framework itself draws, in the order a reader wants them: what the run
+#: found, what it is measuring, how the arms compare, what is happening now, what went wrong,
+#: what has not started, what has finished, and the log underneath all of it.
+DEFAULT_SECTIONS: Tuple[str, ...] = (
+    "headline", "metrics", "arms", "running", "failed", "queued", "finished", "log")
+
+
+def _section_headline(spec: RunSpec, kind: RunKind, data: DashboardData) -> str:
+    lead = headline(spec, kind, data)
+    return f'<div class="lead">{lead}</div>' if lead else ""
+
+
+def _section_metrics(spec: RunSpec, kind: RunKind, data: DashboardData) -> str:
+    finished = data.with_metrics()
+    counts = {arm: (sum(1 for u in finished if u.arm == arm), len(spec.seeds))
+              for arm in data.order}
+    return (f'<div class="panel"><h2>registered metrics · hover for details</h2>'
+            f'{charts.legend(list(data.order), counts)}'
+            f'{metric_rows(spec, kind, finished, data.order)}</div>')
+
+
+def _section_arms(spec: RunSpec, kind: RunKind, data: DashboardData) -> str:
+    from rl_researcher.artefacts.report import aggregate
+
+    finished = data.with_metrics()
+    if not finished:
+        return ""
+    agg = aggregate([u.result or {} for u in finished], [m.name for m in spec.metrics])
+    table = arm_table(spec, kind, agg, data.order)
+    return (f'<div class="panel scroll"><h2>by arm · mean and spread across seeds</h2>'
+            f'{table}</div>') if table else ""
+
+
+def _section_log(spec: RunSpec, kind: RunKind, data: DashboardData) -> str:
+    body = format_log(data.log_tail, vocab_of(kind), data.order)
+    return f'<div class="panel"><h2>log</h2><div class="log">{body}</div></div>'
+
+
+SECTIONS: Dict[str, Callable[[RunSpec, RunKind, DashboardData], str]] = {
+    "headline": _section_headline,
+    "metrics": _section_metrics,
+    "arms": _section_arms,
+    "running": lambda spec, kind, data: running_table(spec, kind, data),
+    "failed": lambda spec, kind, data: failed_panel(data),
+    "queued": lambda spec, kind, data: queued_panel(data),
+    "finished": lambda spec, kind, data: finished_table(spec, kind, data),
+    "log": _section_log,
+}
+
+
+def sections_of(kind: RunKind) -> Tuple[str, ...]:
+    """The section names this kind's page draws, in order.
+
+    A kind that says nothing gets :data:`DEFAULT_SECTIONS`. A kind that declares
+    ``page_sections`` gets exactly what it names, which is how it drops a panel it has no data
+    for and slots its own between two of the framework's.
+    """
+    named = getattr(kind, "page_sections", None)
+    return tuple(str(n) for n in named) if named else DEFAULT_SECTIONS
+
+
+def section(name: str, spec: RunSpec, kind: RunKind, data: DashboardData) -> str:
+    """One named section's HTML, the kind's own before the framework's.
+
+    An unknown name renders as nothing rather than raising. A page is the artefact a person
+    opens *because* something has gone wrong; it must not be the second thing to break.
+    """
+    extras = getattr(kind, "page_extras", None) or {}
+    fn = extras.get(name) or SECTIONS.get(name)
+    if fn is None:
+        return ""
+    return fn(spec, kind, data)
+
+
+def tiles(pairs: Sequence[Tuple[str, str]]) -> str:
+    """The four big numbers across the top: value, then what it is."""
+    return ('<div class="tiles">'
+            + "".join(f'<div class="tile"><b>{v}</b><span>{html.escape(k)}</span></div>'
+                      for v, k in pairs)
+            + "</div>")
+
+
+def page_tiles(spec: RunSpec, kind: RunKind, data: DashboardData) -> str:
+    unit_noun = getattr(kind, "unit_noun", "unit")
+    step_noun = getattr(kind, "step_noun", "step")
+    pct = 100.0 * data.done_steps / max(data.total_steps, 1)
+    done, total = data.status.done, len(data.units)
+    return tiles([
+        (f'{done}<span class="of">/{total}</span>', f"{unit_noun}s done"),
+        (f"{pct:.0f}%", f"of {data.total_steps:,} {step_noun}s"),
+        (duration(data.elapsed_all), "compute spent"),
+        (duration(data.eta_all), "projected left"),
+    ])
+
+
+def page_foot(spec: RunSpec, kind: RunKind, data: DashboardData, *, refresh: bool) -> str:
+    e = html.escape
+    extra = getattr(kind, "page_note", None)
+    mid = f" · {extra(spec, data)}" if callable(extra) else ""
+    when = time.strftime("%H:%M:%S")
+    tail_note = (f"refreshing every {REFRESH_SECONDS}s" if refresh
+                 else "rendered once, the run has ended")
+    return (f'<div class="foot">{e(spec.name)} · {e(str(data.device or "cpu"))}{mid} · '
+            f'<code>status</code> is the authority on liveness, not this page · '
+            f'{when}, {tail_note}</div>')
+
+
+def shell(title: str, body: str, *, refresh: bool = True, extra_css: str = "",
+          defs: str = "") -> str:
+    """The whole document around a body: no request leaves it, ever.
+
+    Not one URL, font import or script src — the page has to open from a file and from a
+    share, on a machine with no network, which is exactly where a run tends to be.
+    """
+    meta = f'<meta http-equiv="refresh" content="{REFRESH_SECONDS}">' if refresh else ""
+    return f"""<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">{meta}
+<title>{html.escape(title)}</title>
+<style>{DASHBOARD_CSS}{extra_css}</style>
+<script>{THEME_SCRIPT}</script></head>
+<body>{defs}<div class="wrap">
+{body}
+</div></body></html>
+"""
+
+
+def render(spec: RunSpec, kind: RunKind, data: DashboardData, *, refresh: bool = True) -> str:
+    """The live page for one run."""
+    e = html.escape
+    pct = 100.0 * data.done_steps / max(data.total_steps, 1)
+    beat = (f' · updated {duration(data.heartbeat)} ago'
+            if data.heartbeat is not None else "")
+    defs = charts.seed_defs([(ps.variant_color(u.arm, list(data.order)), int(u.seed))
+                             for u in data.units] + [(charts.SEED_KEY_COLOUR, 1)])
+    head = (f'<div class="head"><h1>{e(spec.name)}</h1>'
+            f'<span class="chip t-{data.status.tone}">{e(data.status.state)}{beat}</span>'
+            f'<span class="spacer"></span>{THEME_BUTTONS}</div>')
+    track = (f'<div class="track bigtrack">'
+             f'<i style="width:{pct:.1f}%;background:{ps.ACCENT}"></i></div>')
+    body = "\n".join([head, page_tiles(spec, kind, data), track]
+                     + [section(n, spec, kind, data) for n in sections_of(kind)]
+                     + [page_foot(spec, kind, data, refresh=refresh)])
+    return shell(f"{spec.name} · {kind.name} dashboard", body, refresh=refresh,
+                 extra_css=str(getattr(kind, "page_css", "")), defs=defs)
+
+
+def write_dashboard(spec: RunSpec, kind: RunKind, out: Path, path: Optional[Path] = None,
+                    *, refresh: bool = True) -> Path:
+    out = Path(out)
+    target = Path(path) if path else out / "dashboard.html"
+    return write_page(
+        lambda *, refresh=refresh: render(spec, kind, collect(spec, kind, out), refresh=refresh),
+        target, refresh=refresh)
