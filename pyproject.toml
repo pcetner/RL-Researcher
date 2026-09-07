@@ -32,7 +32,11 @@ where = ["."]
 include = ["rl_researcher*"]
 
 [tool.setuptools.package-data]
-rl_researcher = ["py.typed", "*.ps1", "examples/toy/*.toml"]
+# The skills, the pre-commit hook and the lessons are the package's own assets, not
+# documentation about it: `install_skills`, `install_hooks`, C10 and C11 all read them at
+# runtime. Kept beside the package they were in the repository and in no wheel built from it,
+# which is invisible from a checkout and total from an install.
+rl_researcher = ["py.typed", "*.ps1", "lessons.md", "skills/*/SKILL.md", "hooks/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

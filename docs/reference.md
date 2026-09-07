@@ -213,7 +213,7 @@ project with its own `.githooks/pre-commit` keeps it.
 
 ### `install_skills [--dest DIR] [--dry-run]`
 
-Copies every directory under the package's `skills/` that holds a `SKILL.md` into
+Copies every directory under the package's `rl_researcher/skills/` that holds a `SKILL.md` into
 `~/.claude/skills`, overwriting. Four are shipped: `rl-researcher` (run one), `rl-design`
 (write the spec), `rl-operate` (launch, watch, stop) and `rl-interpret` (read the result). They
 share one byte-identical invariants block, which C10 checks.

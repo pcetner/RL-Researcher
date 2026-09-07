@@ -55,7 +55,7 @@ outright when the process that owned the directory is gone and which checkpoint 
 ## Stopping
 
 Ctrl-C once: checkpoint, exit 0, resume with the identical command. Killing by hand has bitten
-twice on this machine (`docs/lessons.md` L016) — `Get-Process python` does not match the Store
+twice on this machine (`rl_researcher/lessons.md` L016) — `Get-Process python` does not match the Store
 Python, and `kill -9 $!` under Git Bash kills the subshell. Find the pid with
 `Get-CimInstance Win32_Process` filtered on the command line, stop it, and confirm.
 
