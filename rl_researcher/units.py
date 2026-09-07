@@ -159,8 +159,15 @@ class UnitState:
         return d
 
 
+#: How many heartbeats of silence, plus a grace, before a unit that still claims to be alive
+#: is treated as hung. The project's `[watcher] stale_factor` overrides it.
+STALE_FACTOR = 2.0
+STALE_GRACE_SECONDS = 30.0
+
+
 def read_unit(cell: Path, *, unit: str, heartbeat_seconds: float,
-              normalise: Optional[Any] = None) -> UnitState:
+              normalise: Optional[Any] = None,
+              stale_factor: float = STALE_FACTOR) -> UnitState:
     """The state of the unit in ``cell``. A result on disk beats the heartbeat (the result is
     the proof); a failure marker beats staleness; a checkpoint without a result is resumable.
 
@@ -205,7 +212,8 @@ def read_unit(cell: Path, *, unit: str, heartbeat_seconds: float,
         st.resumed_from_step = progress.get("resumed_from_step")
         st.age = age_of(progress.get("updated"))
         if st.status in LIVE_STATUSES:
-            st.stale = st.age is None or st.age > 2 * heartbeat_seconds + 30
+            st.stale = (st.age is None
+                        or st.age > stale_factor * heartbeat_seconds + STALE_GRACE_SECONDS)
     st.resumable = st.checkpoint_step is not None
     return st
 

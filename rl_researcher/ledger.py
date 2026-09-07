@@ -29,9 +29,12 @@ Four kinds of row:
 from __future__ import annotations
 
 import json
+import os
+import time
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Sequence
+from typing import Any, Dict, Iterable, Iterator, List, Optional, Sequence
 
 from rl_researcher import atomic
 from rl_researcher.units import stamp_now
@@ -221,22 +224,63 @@ class Ledger:
 
     def add(self, finding: Finding) -> Finding:
         """Append one row, giving it an id and a date if it has none. A row whose identity is
-        already on file is returned unchanged and not written again."""
+        already on file is returned unchanged and not written again.
+
+        The id is minted and the line appended under an exclusive claim on the file, and the
+        rows are re-read from disk inside it. Reading once at open and appending later gave two
+        writers the same ``F####`` — a watcher tick acting on a finished run while someone ran
+        `report` by hand is exactly that, and two rows with one id in an append-only file
+        cannot be told apart afterwards.
+        """
         if finding.kind not in KINDS:
             raise LedgerError(f"unknown finding kind {finding.kind!r}; known: {list(KINDS)}")
-        existing = next((r for r in self.rows if r.identity == finding.identity), None)
-        if existing is not None:
-            return existing
-        if not finding.id:
-            finding.id = self.next_id()
-        if not finding.date:
-            finding.date = stamp_now()[:10]
-        for old in finding.supersedes:
-            if self.by_id(old) is None:
-                raise LedgerError(f"{finding.id} supersedes {old}, which is not in the ledger")
-        self.rows.append(finding)
-        self._append_line(finding)
-        return finding
+        with self._exclusive():
+            self._rows = self._read()
+            existing = next((r for r in self.rows if r.identity == finding.identity), None)
+            if existing is not None:
+                return existing
+            if not finding.id:
+                finding.id = self.next_id()
+            if not finding.date:
+                finding.date = stamp_now()[:10]
+            for old in finding.supersedes:
+                if self.by_id(old) is None:
+                    raise LedgerError(f"{finding.id} supersedes {old}, which is not in the ledger")
+            self.rows.append(finding)
+            self._append_line(finding)
+            return finding
+
+    @contextmanager
+    def _exclusive(self, *, attempts: int = 60, delay: float = 0.05) -> Iterator[None]:
+        """Hold the ledger against other writers for the length of one append.
+
+        A create that fails is the whole mechanism, the same one the run lock uses. A holder
+        that died leaves the file behind, so a claim older than the whole retry budget is taken
+        over rather than waited on forever — losing a row is worse than the small risk of two
+        appends, and both are better than a command that never returns.
+        """
+        guard = self.path.with_name(self.path.name + ".claim")
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        for attempt in range(attempts):
+            try:
+                fd = os.open(str(guard), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                os.close(fd)
+                break
+            except FileExistsError:
+                if attempt == attempts - 1:
+                    try:
+                        guard.unlink()
+                    except OSError:  # pragma: no cover - another writer got there first
+                        pass
+                    break
+                time.sleep(delay)
+        try:
+            yield
+        finally:
+            try:
+                guard.unlink()
+            except OSError:  # pragma: no cover
+                pass
 
     def extend(self, findings: Iterable[Finding]) -> List[Finding]:
         return [self.add(f) for f in findings]

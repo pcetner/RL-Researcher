@@ -205,11 +205,12 @@ def c05_seeds(ctx: Context) -> Iterable[Finding]:
         return []
     if not getattr(ctx.kind, "compares_seeds", True):
         return []                       # deterministic given its data; there is no spread
-    want = 1 if getattr(ctx.spec, "screening", False) else 3
+    screening_seeds = int(getattr(getattr(ctx.config, "gate", None), "screening_seeds", 1) or 1)
+    want = screening_seeds if getattr(ctx.spec, "screening", False) else 3
     n = len(ctx.spec.seeds)
     if getattr(ctx.spec, "screening", False):
-        return ([] if n >= 1 else
-                [_err("C05", "a screening pass still needs a seed")])
+        return ([] if n >= want else
+                [_err("C05", f"a screening pass still needs {want} seed(s); this has {n}")])
     if n < want:
         return [_err("C05", f"{n} seed(s) and `screening` is not set. One seed read as a "
                             f"difference is the commonest way a study says nothing; declare "

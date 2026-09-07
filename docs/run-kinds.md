@@ -117,6 +117,13 @@ and three methods:
 `"incomplete"`, and the report says so where a reader cannot miss it, because its numbers are
 about a smaller budget than the one registered.
 
+**`steps` and `seconds` are cumulative, not per session.** A unit resumed from step 400 that
+runs 100 more reports 500 steps and the time both attempts took, with `resumed_from_step = 400`.
+The throughput table divides the one by the other, so a kind that reports only this session's
+seconds against the total steps records a rate it never achieved, and every later estimate on
+that device is low — including the one the gate asks a person to approve. The toy kind carries
+`elapsed_seconds` through its checkpoint for exactly this reason.
+
 ### `load(path) -> RunSpec`
 
 Loads and validates a spec. `BaseKind.load` reads the TOML through the generic loader and puts

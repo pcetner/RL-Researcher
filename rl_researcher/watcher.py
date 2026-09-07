@@ -110,7 +110,8 @@ def statuses(config: Config, log: Callable[[str], None]) -> Dict[str, RunStatus]
         try:
             kind = kind_for(path, config)
             spec = kind.load(path)
-            out[spec.name] = run_status(spec, kind, out_dir_for(spec, config))
+            out[spec.name] = run_status(spec, kind, out_dir_for(spec, config),
+                                        stale_factor=float(config.watcher.stale_factor))
         except Exception as exc:  # noqa: BLE001 - one bad spec is not a reason to stop watching
             log(f"skipped {path.name}: {type(exc).__name__}: {exc}")
     return out

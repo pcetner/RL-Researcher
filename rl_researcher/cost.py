@@ -105,7 +105,7 @@ def record_throughput(config: Config, kind: RunKind, spec: RunSpec, unit: str, r
         "kind": kind.name, "unit_class": kind.unit_class(spec, unit),
         "device": device.fingerprint if device else "unknown",
         "device_name": device.name if device else "unknown",
-        "seconds_per_unit": round(seconds, 1),
+        "seconds_per_unit": round(seconds, 6),
         "seconds_per_step": round(seconds / steps, 6) if steps else None,
         "steps": steps, "status": result.get("status"), "run": spec.name, "unit": unit,
         "date": datetime.now(timezone.utc).isoformat(timespec="seconds"),
