@@ -233,3 +233,13 @@ def test_one_tick_from_the_command_line(project, capsys):
     assert watcher.main(["--once", "--quiet"]) == 0
     assert "1 change(s)" in capsys.readouterr().out
     assert watcher.main(["--once", "--quiet"]) == 0
+
+
+def test_a_dry_run_does_not_write_the_tick_it_was_previewing(project):
+    """Writing it would mean the next real tick saw no change and skipped every report the dry
+    run had just said was ready — a preview that costs you the thing it previewed."""
+    config, kind, spec, out = _finish_run(project)
+    watcher.tick(config, dry_run=True)
+    assert not watcher.tick_path(config).exists()
+    assert [c.what for c in watcher.tick(config)] == ["finished"]
+    assert (out / "README.md").is_file()
