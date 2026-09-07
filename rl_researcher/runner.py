@@ -27,7 +27,7 @@ from rl_researcher.runlog import Log, open_run_log
 from rl_researcher.spec import RunSpec, spec_fingerprint
 from rl_researcher.stop import install_stop_handler
 from rl_researcher.units import (PROGRESS_NAME, RESULTS_NAME, mark_failed, parse_unit, read_json,
-                                 thin, unit_dir, write_progress)
+                                 stamp_now, thin, unit_dir, write_progress)
 
 PageWriter = Callable[..., None]
 PageWriterFactory = Callable[[RunSpec, RunKind, Path, Log], PageWriter]
@@ -171,19 +171,26 @@ def run(
             if unknown:
                 raise ValueError(f"unknown units {sorted(unknown)}; the run has {all_units}")
             log(f"running only {len(selected)} of {len(all_units)} units on this machine")
-        ctx = RunContext(out=out, log=log, device=device, max_steps=max_steps, max_seconds=max_seconds,
-                         config=config, selected=selected)
         # Preparing is what costs: a snapshot read into memory, a model built, an engine binary
         # demanded. When every selected unit already has a result there is nothing to prepare
         # for, and the run is really a request to rebuild the summary from what is on disk —
         # which must work on a machine that could not have produced it.
         todo = [u for u in selected
                 if not (resume and (unit_dir(out, u) / RESULTS_NAME).is_file())]
+        previous = read_json(out / RESULTS_NAME) or {} if (out / RESULTS_NAME).is_file() else {}
+        # The commit that produced the units, which is only today's HEAD when a unit ran today.
+        # Rebuilding a summary must not restamp measurements with the commit that re-rendered
+        # them: the ledger's row identity carries the commit, so a restamp writes a second row
+        # claiming the same numbers were measured by code that never ran them.
+        commit = git_sha() if todo else str(previous.get("git_sha") or git_sha())
+        ctx = RunContext(out=out, log=log, device=device, max_steps=max_steps, max_seconds=max_seconds,
+                         config=config, selected=selected, commit=commit, previous=previous)
         prepared = None
         if todo:
             prepared = kind.prepare(spec, ctx)
         else:
-            log(f"every unit of {spec.name} already has a result; rebuilding the summary only")
+            log(f"every unit of {spec.name} already has a result; rebuilding the summary only "
+                f"(provenance kept at {commit[:12]})")
 
         results: List[Dict[str, Any]] = []
         for unit in all_units:
@@ -192,11 +199,16 @@ def run(
             res_path = cell / RESULTS_NAME
             if unit not in selected:
                 if res_path.is_file():
-                    results.append(read_json(res_path) or {})
+                    results.append(kind.read_result(read_json(res_path) or {}))
                 continue
             cell.mkdir(parents=True, exist_ok=True)
             if resume and res_path.is_file():
-                results.append(read_json(res_path) or {})
+                # Through the kind, because a result written before the current contract is
+                # still evidence and the kind is the only thing that knows its old shape. Read
+                # raw, a summary of finished units carries no `metrics` at all, and a report
+                # over it prints every registered number as n/a under a cleared-every-bar
+                # headline -- an all-clear made of nothing.
+                results.append(kind.read_result(read_json(res_path) or {}))
                 log(f"[{arm} seed {seed}] already finished; {res_path} kept")
                 continue
             if not resume:
@@ -245,7 +257,7 @@ def run(
             "run": spec.name,
             "kind": kind.name,
             "fingerprint": fingerprint,
-            "git_sha": git_sha(),
+            "git_sha": commit,
             "device": device.name if device else None,
             "device_fingerprint": device.fingerprint if device else None,
             "budget": {"max_steps": max_steps, "max_seconds": max_seconds},
@@ -253,9 +265,20 @@ def run(
             "runs": results,
             "missing_units": missing_units(kind, spec, out),
             "figures": {},
-            "wall_seconds": round(time.time() - started, 1),
+            # How long the *run* took, which on a rebuild is not how long the rebuild took.
+            "wall_seconds": (round(time.time() - started, 1) if todo
+                             else previous.get("wall_seconds")
+                             or round(sum(float(r.get("seconds") or 0) for r in results), 1)),
         }
+        if not todo:
+            summary["regenerated"] = stamp_now()
         summary.update(kind.summarise(spec, results, out, ctx) or {})
+        # Provenance is the framework's to state, not the kind's. A kind that stamps its own
+        # `git_sha` was, on a rebuild, asking git for today's HEAD and winning this merge.
+        if summary.get("git_sha") != commit:
+            log(f"note: {kind.name}.summarise set git_sha to {summary.get('git_sha')}; the "
+                f"run's own provenance ({commit[:12]}) stands")
+        summary["git_sha"] = commit
         atomic.write_text(out / RESULTS_NAME, json.dumps(summary, indent=2, default=str))
         log(f"summary -> {out / RESULTS_NAME}" + (f" ({len(summary['missing_units'])} units missing)"
                                                    if summary["missing_units"] else ""))

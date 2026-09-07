@@ -188,3 +188,24 @@ def test_a_heartbeat_is_never_reported_as_being_from_the_future():
     from rl_researcher.units import age_of
 
     assert age_of(time.time() + 3600) == 0.0
+
+
+def test_a_stamp_is_parsed_before_it_is_printed_or_compared():
+    """`Finished 1788749820.0716286` is what a reader gets when stamps are compared as text.
+
+    The twelve committed Phase 4 heartbeats carry `time.time()` floats, from before the ISO
+    rule. Sorting those as strings also puts "9..." above "10...", so the newest unit is not
+    reliably the one reported.
+    """
+    from datetime import datetime, timezone
+
+    from rl_researcher.units import stamp_of
+
+    iso = stamp_of("2026-09-06T12:00:00+00:00")
+    assert iso == datetime(2026, 9, 6, 12, tzinfo=timezone.utc)
+    assert stamp_of("2026-09-06T12:00:00") == iso, "a naive stamp is read as UTC"
+    assert stamp_of(iso.timestamp()) == iso, "an epoch float names the same instant"
+    for junk in (None, True, "not a date", [], {}):
+        assert stamp_of(junk) is None
+    # ...and it orders by instant, not by digit.
+    assert max(stamp_of(9_000_000_000.0), stamp_of(10_000_000_000.0)) == stamp_of(10_000_000_000.0)

@@ -317,3 +317,36 @@ def test_a_block_added_to_an_authored_section_is_refused_rather_than_dropped(tmp
     art.add("provenance", Footer(text="x", command="python -m rl_researcher.report r"))
     text = write(art, tmp_path / "README.md").read_text(encoding="utf-8")
     assert "python -m rl_researcher.report r" in body_of(text, "generated", "provenance")
+
+
+def test_an_arm_no_bar_could_judge_is_not_reported_as_having_cleared_them(project):
+    """The most confident sentence in the document, over a column of `n/a`.
+
+    A degenerate metric is skipped when the verdict is assembled, which is right when one
+    comparison of several is dead. It was wrong when *every* one was: the arm then collected no
+    failures, fell through to `cleared`, and the report opened by saying it had cleared every
+    registered bar on the strength of nothing at all.
+    """
+    from rl_researcher.artefacts.run_report import outcome
+    from rl_researcher.config import kind_for, load_config, out_dir_for
+
+    config = load_config()
+    spec_path = project / "studies" / "toy-line-fit.toml"
+    spec = kind_for(spec_path, config).load(spec_path)
+    out = out_dir_for(spec, config)
+
+    # Units that finished but whose numbers this reader cannot see: exactly the shape of a
+    # result written before the metrics contract, read without the kind's translation.
+    blind = {"runs": [{"arm": a, "seed": s, "status": "complete"}
+                      for a in ("ols", "noisy") for s in (0, 1, 2)]}
+    said, _missed = outcome(spec, blind)
+    assert "Cleared every registered bar" not in said
+    assert "Not judged" in said and "`ols`" in said and "`noisy`" in said
+
+    # ...and a real run still gets its verdict.
+    from rl_researcher.runner import run
+
+    summary = run(spec, kind_for(spec_path, config), out, config=config, max_seconds=5)
+    said, _missed = outcome(spec, summary)
+    assert "Not judged" not in said
+    assert "Cleared every registered bar" in said or "No arm cleared" in said

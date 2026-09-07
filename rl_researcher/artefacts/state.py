@@ -29,7 +29,7 @@ from rl_researcher.regions import find
 from rl_researcher.render import md_to_html
 from rl_researcher.spec import load_toml
 from rl_researcher.status import RunStatus, run_status
-from rl_researcher.units import stamp_now
+from rl_researcher.units import stamp_now, stamp_of
 
 STATE_MD = "STATE.md"
 STATE_HTML = "state.html"
@@ -256,8 +256,15 @@ def _rel(config: Config, p: Path) -> str:
 
 
 def _finished_at(st: RunStatus) -> str:
-    stamps = [u.progress.get("updated") for u in st.units if u.progress.get("updated")]
-    return max((str(s) for s in stamps), default="")
+    """When the last unit stopped beating, as a stamp a person can read.
+
+    Every stamp is parsed before being compared, rather than compared as text. Units written
+    before the ISO rule carry a `time.time()` float, and `max` over the *strings* both prints
+    an epoch at the reader and orders "9..." above "10...".
+    """
+    stamps = [stamp_of(u.progress.get("updated")) for u in st.units]
+    real = [s for s in stamps if s is not None]
+    return max(real).isoformat(timespec="minutes") if real else ""
 
 
 def _running_row(config: Config, spec: Any, st: RunStatus, out: Path) -> Dict[str, Any]:
