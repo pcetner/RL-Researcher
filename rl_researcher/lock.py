@@ -13,6 +13,7 @@ import json
 import os
 import platform
 import subprocess
+import time
 from pathlib import Path
 from typing import Callable, Dict, Optional
 
@@ -64,12 +65,29 @@ def _claim(path: Path, run: str) -> bool:
     return True
 
 
+def _settled(path: Path, attempts: int = 40, delay: float = 0.025) -> Optional[Dict]:
+    """The lock's contents, waiting out the instant between its creation and its payload.
+
+    ``_claim`` creates the file and writes into it, so there is a window in which the loser of
+    a race reads an empty file. Treating that as an unreadable lock and taking it over hands
+    the directory to two processes -- which is the thing the exclusive create was added to
+    stop, arrived at from the other side. A genuinely corrupt lock stays unreadable and is
+    taken over a second later; a racing one resolves in microseconds.
+    """
+    for _ in range(attempts):
+        held = read_json(path)
+        if held is not None and held.get("pid") is not None:
+            return held
+        time.sleep(delay)
+    return read_json(path)
+
+
 def acquire_lock(out: Path, run: str, log: Callable[[str], None]) -> Path:
     """Claim ``out`` for this process, or raise :class:`RunLocked`."""
     path = Path(out) / LOCK_NAME
     if _claim(path, run):
         return path
-    held = read_json(path)
+    held = _settled(path)
     if held is not None:
         pid, host = held.get("pid"), held.get("host")
         if pid is not None and host == platform.node() and process_alive(int(pid)):
