@@ -17,7 +17,7 @@ from typing import Dict, List, Optional, Tuple
 from rl_researcher.kinds import RunKind
 from rl_researcher.lock import lock_holder
 from rl_researcher.spec import RunSpec
-from rl_researcher.units import UnitState, read_unit, unit_dir
+from rl_researcher.units import STALE_FACTOR, UnitState, read_unit, unit_dir
 
 STATE_RANK = {"FAILED": 0, "STALE": 1, "running": 2, "stopped": 3, "finished": 4, "not started": 5}
 
@@ -71,11 +71,12 @@ def state_of(units: List[UnitState], lock: Optional[Dict]) -> Tuple[str, str]:
     return "not started", "muted"
 
 
-def run_status(spec: RunSpec, kind: RunKind, out: Path) -> RunStatus:
+def run_status(spec: RunSpec, kind: RunKind, out: Path, *,
+               stale_factor: float = STALE_FACTOR) -> RunStatus:
     out = Path(out)
     normalise = getattr(kind, "read_result", None)
     units = [read_unit(unit_dir(out, u), unit=u, heartbeat_seconds=spec.cadence.heartbeat_seconds,
-                       normalise=normalise)
+                       normalise=normalise, stale_factor=stale_factor)
              for u in kind.units(spec)]
     lock = lock_holder(out)
     state, tone = state_of(units, lock)
@@ -132,8 +133,9 @@ def main(argv=None) -> int:
 
     console()
     a = spec_parser("where a run stands; exit 2 on a stale or failed unit").parse_args(argv)
-    _config, kind, spec, out = load_all(a.spec, a.out)
-    return print_status(run_status(spec, kind, out))
+    config, kind, spec, out = load_all(a.spec, a.out)
+    return print_status(run_status(spec, kind, out,
+                                   stale_factor=float(config.watcher.stale_factor)))
 
 
 if __name__ == "__main__":

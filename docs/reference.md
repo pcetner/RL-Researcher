@@ -296,8 +296,9 @@ rather than a warning, because a misspelled setting that is silently ignored run
 and reports it as the setting that was asked for. Unknown keys under `[project]`, and unknown
 top-level tables, are currently ignored.
 
-Several settings are read into the configuration and nothing consumes them yet: the whole of
-`[watcher]` and `[canary]`, and `gate.screening_seeds`, `paths.lessons` and `paths.diagnoses`.
+`watcher.launch` is read and deliberately does nothing: it is off, and there is no code that
+could act on it being on, because starting queued work is a decision. Everything else in the
+file is consumed.
 
 ## Spec format
 

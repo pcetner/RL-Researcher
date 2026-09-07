@@ -215,7 +215,7 @@ def build_state(config: Config, *, ledger: Optional[Ledger] = None) -> StateView
             view.health.setdefault("unreadable_specs", []).append(f"{spec_path.name}: {exc}")
             continue
         out = config.out_root(kind_name) / spec.name
-        st = run_status(spec, kind, out)
+        st = run_status(spec, kind, out, stale_factor=float(config.watcher.stale_factor))
         summary_path = out / "results.json"
         artefact = out / "README.md"
         if st.finished and summary_path.is_file():
@@ -337,7 +337,7 @@ def _health(config: Config, ledger: Ledger) -> Dict[str, Any]:
 # --------------------------------------------------------------------------- rendering
 
 
-def render_state(view: StateView) -> str:
+def render_state(view: StateView, state_root: str = "docs") -> str:
     L: List[str] = [
         f"<!-- rl: kind=state project={view.project} generated={view.generated} -->",
         f"# {view.project}: state",
@@ -357,7 +357,8 @@ def render_state(view: StateView) -> str:
             L += w.headline + [""]
         if w.options:
             L += ["**Options on the stub.** " + " · ".join(w.options), ""]
-        L += [f"Finished {w.finished or 'at an unrecorded time'}. Read [{w.artefact}]({_link(w.artefact)}); "
+        L += [f"Finished {w.finished or 'at an unrecorded time'}. Read "
+              f"[{w.artefact}]({_link(w.artefact, state_root)}); "
               f"tick a box in its decision region, then run `python -m rl_researcher.decide {w.run}`.", ""]
 
     L += ["## Running", ""]
@@ -405,8 +406,14 @@ def render_state(view: StateView) -> str:
     return "\n".join(L)
 
 
-def _link(rel: str) -> str:
-    return "../" + rel if not rel.startswith("docs/") else rel[len("docs/"):]
+def _link(rel: str, root: str = "docs") -> str:
+    """A repo-relative path, rewritten relative to the directory the state page sits in.
+
+    `[paths] state` is configurable and this assumed `docs/`, so a project that put the page
+    anywhere else got links that resolved nowhere.
+    """
+    prefix = root.rstrip("/") + "/"
+    return rel[len(prefix):] if rel.startswith(prefix) else "../" + rel
 
 
 def write_state(config: Config, *, ledger: Optional[Ledger] = None) -> Path:
@@ -414,7 +421,7 @@ def write_state(config: Config, *, ledger: Optional[Ledger] = None) -> Path:
     view = build_state(config, ledger=ledger)
     root = config.path("state")
     root.mkdir(parents=True, exist_ok=True)
-    md = render_state(view)
+    md = render_state(view, str(config.paths.state))
     md_path = root / STATE_MD
     atomic.write_text(md_path, md)
     atomic.write_text(root / STATE_JSON, json.dumps(view.to_json(), indent=2, default=str))

@@ -54,3 +54,18 @@ def test_the_backoff_is_bounded(tmp_path):
     total = sum(atomic.DELAY * 2 ** i for i in range(atomic.ATTEMPTS - 1))
     assert 1.0 < total < 30.0
 
+
+
+def test_two_files_with_one_stem_do_not_share_a_temporary(tmp_path):
+    """`with_suffix('.tmp')` gave `report.md` and `report.html` the same temporary path, and on
+    Windows `STATE.md` and `state.json` the same one again, case folded. Every caller today is
+    sequential, so this removes a trap rather than a bug -- but the trap is under the writer
+    that exists so no reader ever sees a partial file."""
+    from rl_researcher import atomic
+
+    names = ["report.md", "report.html", "STATE.md", "state.json", "run.log.1", "noextension"]
+    temps = [atomic.temp_for(tmp_path / n) for n in names]
+    folded = [str(t).lower() for t in temps]
+    assert len(set(folded)) == len(names), f"two targets share a temporary: {sorted(folded)}"
+    for name, tmp in zip(names, temps):
+        assert tmp.parent == (tmp_path / name).parent      # same directory, so replace is atomic

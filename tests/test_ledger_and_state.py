@@ -250,3 +250,30 @@ def test_a_result_says_which_framework_produced_it(project):
     assert rows and all(r.framework == stamp for r in rows), \
         "a ledger row does not carry the framework that computed it"
     assert stamp in (out / "README.md").read_text(encoding="utf-8")
+
+
+def test_two_writers_never_mint_the_same_finding_id(tmp_path):
+    """A watcher tick acting on a finished run while someone runs `report` by hand is two
+    writers. Reading the rows once at open and appending later gave both the same `F####`, and
+    an append-only file cannot tell two rows with one id apart afterwards."""
+    import threading
+
+    from rl_researcher.ledger import Finding, Ledger
+
+    path = tmp_path / "findings.jsonl"
+    n = 12
+    ready = threading.Barrier(n)
+
+    def write(i):
+        ready.wait()
+        Ledger(path).add(Finding(kind="post-hoc", run=f"r{i}", metric="m", value=float(i)))
+
+    threads = [threading.Thread(target=write, args=(i,)) for i in range(n)]
+    for th in threads:
+        th.start()
+    for th in threads:
+        th.join()
+
+    ids = [r.id for r in Ledger(path).rows]
+    assert len(ids) == n, f"{n} rows written, {len(ids)} on file"
+    assert len(set(ids)) == n, f"duplicate ids: {sorted(ids)}"
