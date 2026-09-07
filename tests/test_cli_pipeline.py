@@ -202,10 +202,10 @@ def test_the_skills_the_hook_and_the_lessons_are_inside_the_package():
     nothing to compare and C11 fell through to a project file that need not exist. All of it
     invisible from a checkout, which is the only way the package had ever been run.
     """
-    import tomllib
     from pathlib import Path
 
     import rl_researcher
+    from rl_researcher.spec import load_toml
 
     pkg = Path(rl_researcher.__file__).resolve().parent
     wanted = [pkg / "lessons.md", pkg / "hooks" / "pre-commit",
@@ -216,8 +216,9 @@ def test_the_skills_the_hook_and_the_lessons_are_inside_the_package():
 
     # ... and declared, which is the other half of shipping: a file inside the package that no
     # glob names is still left out of the wheel.
-    spec = tomllib.loads((pkg.parent / "pyproject.toml").read_text(encoding="utf-8"))
-    globs = spec["tool"]["setuptools"]["package-data"]["rl_researcher"]
+    # Through the package's own loader, which falls back to `tomli` under 3.10 -- `tomllib`
+    # is 3.11+, and CI runs both.
+    globs = load_toml(pkg.parent / "pyproject.toml")["tool"]["setuptools"]["package-data"]["rl_researcher"]
     for path in wanted:
         rel = path.relative_to(pkg).as_posix()
         assert any(Path(rel).match(g) for g in globs), f"{rel} matches no package-data glob"
