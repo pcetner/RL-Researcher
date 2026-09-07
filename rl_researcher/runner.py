@@ -33,7 +33,21 @@ PageWriter = Callable[..., None]
 PageWriterFactory = Callable[[RunSpec, RunKind, Path, Log], PageWriter]
 
 
-class GuardBlocked(RuntimeError):
+class Refused(RuntimeError):
+    """The run did not start, and nothing is wrong with it.
+
+    A guard that is blocked and a check that returned an error are the same event to whoever
+    launched the run: it was asked whether to start, and the answer was no. Neither is a
+    failure, so neither is logged as one — a traceback here reads as a crash and buries the
+    sentence the human has to act on.
+    """
+
+
+class GuardBlocked(Refused):
+    pass
+
+
+class CheckFailed(Refused):
     pass
 
 
@@ -54,6 +68,32 @@ def _no_page_factory(spec: RunSpec, kind: RunKind, out: Path, log: Log) -> PageW
     return _no_page
 
 
+def _run_checks(kind: RunKind, spec: RunSpec, config: Any, log: Log, skip: bool) -> None:
+    """Ask the kind what it knows before the first unit, and refuse on anything at error level.
+
+    This runs before ``prepare``, so a refusal costs nothing: no model is loaded, no engine has
+    booted, no unit directory exists. The alternative the kinds were writing before this existed
+    was a raise inside ``run_unit``, which discovers halfway through the second unit that the
+    data was wrong and throws away everything in front of it.
+    """
+    from rl_researcher.findings import collect, errors
+
+    findings = collect(kind, spec, config)
+    for f in findings:
+        log(f"check [{f.check}] {f.level}: {f.message}")
+    bad = errors(findings)
+    if not bad:
+        return
+    if skip:
+        # Said out loud, in the run's own log, because the numbers this run produces were
+        # made against a registration something already objected to.
+        log(f"waived {len(bad)} check error(s) with --no-check; this run's numbers stand on that")
+        return
+    raise CheckFailed(f"{len(bad)} check(s) failed: "
+                      + "; ".join(f"[{f.check}] {f.message}" for f in bad)
+                      + ". Fix them, or pass --no-check to run anyway.")
+
+
 def missing_units(kind: RunKind, spec: RunSpec, out: Path) -> List[str]:
     return [u for u in kind.units(spec) if not (unit_dir(out, u) / RESULTS_NAME).is_file()]
 
@@ -71,6 +111,7 @@ def run(
     max_steps: Optional[int] = None,
     max_seconds: Optional[float] = None,
     allow_guards: bool = False,
+    skip_checks: bool = False,
     page_writer: PageWriterFactory = _no_page_factory,
     gate: Optional[Callable[..., Any]] = None,
 ) -> Dict[str, Any]:
@@ -120,6 +161,7 @@ def run(
         for g in kind.guards(spec):
             if g.is_blocked() and not allow_guards:
                 raise GuardBlocked(f"{g.name}: {g.message}")
+        _run_checks(kind, spec, config, log, skip_checks)
         all_units = kind.units(spec)
         selected = list(all_units)
         if units:
@@ -209,10 +251,10 @@ def run(
                                                    if summary["missing_units"] else ""))
         completed = True
         return summary
-    except GateRefused as exc:
-        # A refusal is not a failure. It happens before the lock and before any unit exists, so
-        # there is nothing to mark and nothing to diagnose; a traceback here would read as a
-        # crash and bury the one thing the human has to act on, which is the approve command.
+    except (GateRefused, Refused) as exc:
+        # A refusal is not a failure. It happens before any unit exists, so there is nothing to
+        # mark and nothing to diagnose; a traceback here would read as a crash and bury the one
+        # thing the human has to act on, which is the sentence saying what to fix.
         for line in str(exc).splitlines():
             log(line)
         raise

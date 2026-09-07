@@ -10,18 +10,8 @@ from __future__ import annotations
 import sys
 
 from rl_researcher.cli import console, load_all, spec_parser
+from rl_researcher.findings import collect, errors
 from rl_researcher.spec import SpecError, spec_fingerprint
-
-
-def _staged_checks(stage, spec, kind, config, out) -> list:
-    """The checks registry is built in a later milestone; until it exists this is empty."""
-    try:
-        import importlib
-
-        checks = importlib.import_module("rl_researcher.checks")
-    except ModuleNotFoundError:
-        return []
-    return list(checks.run_checks(stage, spec, kind, config, out=out))
 
 
 def main(argv=None) -> int:
@@ -37,14 +27,14 @@ def main(argv=None) -> int:
           f"{len(spec.seeds)} seed(s) = {len(units)} unit(s), {len(spec.metrics)} registered metric(s); "
           f"fingerprint {spec_fingerprint(spec)}")
     print(f"outputs -> {out}")
-    findings = list(kind.check(spec, config))
-    findings += _staged_checks("check", spec, kind, config, out)
-    bad = 0
+    findings = collect(kind, spec, config, out)
     for f in findings:
         print(f"  [{f.check}] {f.level}: {f.message}")
-        bad += f.level == "error"
     if not findings:
         print("checks: nothing to report")
+    bad = errors(findings)
+    if bad:
+        print(f"{len(bad)} error(s); `run` would refuse this spec (exit 4) unless passed --no-check")
     return 1 if bad else 0
 
 

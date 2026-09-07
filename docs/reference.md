@@ -16,6 +16,10 @@ walking upward from it.
 Loads and validates the spec, prints what it registers, and runs any check-stage findings the
 kind supplies.
 
+`run` asks the same questions through the same collector, so this command tells you in
+advance whether a launch will be refused. It reports; it does not launch, so an error here
+exits 1 rather than the 4 a refused run exits with.
+
 Exit 0, or 1 if a finding has level `error`.
 
 ### `pin <spec> [--out DIR]`
@@ -56,24 +60,32 @@ untrustworthy.
 Exit 0, or 1 if the quote is blank. Omitting `--quote` altogether is an argparse error, which
 exits 2.
 
-### `run <spec> [--out DIR] [--max-steps N] [--max-seconds S] [--units A,B] [--no-resume] [--allow-guards] [--no-gate]`
+### `run <spec> [--out DIR] [--max-steps N] [--max-seconds S] [--units A,B] [--no-resume] [--allow-guards] [--no-check] [--no-gate]`
 
 Runs every unit that has no result yet.
 
 The order of operations is: assess the gate, take the lock, install the stop handler, start any
-dashboard writer, ask the guards, prepare once, then run each selected unit. The summary is
-written to `<out>/results.json` when the last unit finishes.
+dashboard writer, ask the guards, run the checks, prepare once, then run each selected unit.
+The summary is written to `<out>/results.json` when the last unit finishes.
+
+Checks run before `prepare`, so a refusal costs nothing: no model is loaded, no unit directory
+exists, and the lock is released. An error-level finding refuses the run. The alternative a
+kind would otherwise write is a raise inside `run_unit`, which discovers halfway through the
+second unit that the data was wrong and throws away everything in front of it.
 
 `--no-resume` starts every unit over, discarding checkpoints. `--allow-guards` runs even when a
-guard is blocked. `--no-gate` skips the cost gate; it exists because an estimate can be wrong
-about a machine it has never seen, and it is recorded in the log.
+guard is blocked. `--no-check` runs even when a check returned an error; the findings and the
+waiver are both written to the run's own log, because the numbers the run produces stand on a
+registration something objected to. `--no-gate` skips the cost gate; it exists because an
+estimate can be wrong about a machine it has never seen, and it is recorded in the log.
 
 `--units` names the arms or unit identifiers this machine takes, so a run can be split across
 machines and the directories merged afterwards. The summary covers whichever units exist and
 lists the ones that are missing.
 
 Exit 0 on success or a hot-stop, 1 on a failure, 2 if another live process holds the lock, 3 if
-gated without an approval, 4 if a guard blocked.
+gated without an approval, 4 if it was refused before the first unit — a guard was blocked, or
+a check returned an error.
 
 ### `status <spec> [--out DIR]`
 
@@ -419,4 +431,4 @@ The first seven are generated; the last two are authored.
 | 1 | an error finding, a failed run, or a refusal to act without an input |
 | 2 | a stale or failed unit, or another live process holding the lock |
 | 3 | over the gate line with no approval |
-| 4 | a kind's guard blocked the run |
+| 4 | the run was refused before its first unit: a guard blocked, or a check returned an error |
