@@ -228,12 +228,21 @@ class Figure(Block):
 
 @dataclass(frozen=True)
 class Gallery(Block):
-    """Per-unit evidence, many small images. In markdown it is a table of links, because a
-    markdown file with forty inlined images is not a file anyone opens twice."""
+    """Per-unit evidence, many small images.
+
+    By default markdown gets a table of links, because a markdown file with forty inlined
+    images is not a file anyone opens twice. ``inline`` overrides that for a kind whose
+    per-unit evidence *is* the argument -- a study's rollout strips are the one thing a
+    reviewer can check against their own eyes -- and inlining them in the markdown is also what
+    puts them in the HTML beside it, which is rendered from that markdown and embeds what it
+    finds. Links alone leave the reviewer's page self-contained for the figures and not for the
+    evidence, which is the half a reviewer actually argues with.
+    """
 
     title: str = ""
     items: Sequence[Tuple[str, str]] = field(default_factory=tuple)      # (label, src)
     note: str = ""
+    inline: bool = False
     css: ClassVar[str] = PANEL_CSS + """
   .gal { display:grid; grid-template-columns:repeat(auto-fill,minmax(220px,1fr)); gap:12px }
   .gal figure { margin:0 }
@@ -245,6 +254,8 @@ class Gallery(Block):
         if not self.items:
             return ""
         note = f"{self.note}\n\n" if self.note else ""
+        if self.inline:
+            return note + "\n\n".join(f"![{label}]({src})" for label, src in self.items)
         return note + rows_to_md(["unit", "evidence"],
                                  [(label, f"[{src.rsplit('/', 1)[-1]}]({src})") for label, src in self.items])
 
