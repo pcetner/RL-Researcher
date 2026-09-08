@@ -90,6 +90,7 @@ class Finding:
     data: str = ""                      # "<snapshot>@<digest[:8]>"
     budget: str = ""
     artefact: str = ""                  # repo-relative path to the page that states it
+    via: str = ""                       # how the row was recorded: "cli", "dashboard"
     touches: List[str] = field(default_factory=list)     # plan decisions, e.g. ["D4", "§8.4"]
     supersedes: List[str] = field(default_factory=list)
     note: str = ""

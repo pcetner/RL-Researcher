@@ -42,3 +42,21 @@ def write_artefact_for(spec: Any, summary: Dict[str, Any], out: Path, *, kind: A
     from rl_researcher.artefacts.run_report import write_report
 
     return write_report(spec, summary, out, kind=kind, ledger=ledger, command=command)
+
+
+def page_for(md_path: Path, kind: Any = None) -> Path:
+    """The HTML page :func:`write_artefact_for` writes beside ``md_path``.
+
+    Beside the dispatch and keyed on the same attribute, because the two cannot be allowed to
+    disagree: a report is ``README.md`` and ``report.html``, a measurement is ``README.md`` and
+    ``README.html``, and `report` printed the report name for both -- so every measurement this
+    package has ever written announced a page that was not there.
+
+    A caller that wants the page without rewriting it -- to re-render after an edit, or to say
+    where it is -- asks here rather than deriving a name of its own.
+    """
+    md_path = Path(md_path)
+    if getattr(kind, "artefact_kind", "report") == "measurement":
+        # `write_measurement` passes no `html_path`, so `writer.write` derives it from the stem.
+        return md_path.with_suffix(".html")
+    return md_path.with_name("report.html")
