@@ -75,6 +75,7 @@ def record(config: Any, spec: Any, out: Path, *, note: str = "", via: str = "cli
     row = ledger.add(Finding(
         kind="decision", run=spec.name, date=stamp_now()[:10],
         note=note or "; ".join(chose),
+        choices=list(chose),
         commit=str(summary.get("git_sha", ""))[:12],
         fingerprint=str(summary.get("fingerprint", "")),
         artefact=_rel(config.root, artefact),

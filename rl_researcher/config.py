@@ -83,6 +83,8 @@ class Config:
     root: Path
     name: str = "project"
     python: str = "python"
+    goal: str = ""
+    focus: str = ""
     kinds: Dict[str, str] = field(default_factory=dict)
     out: Dict[str, str] = field(default_factory=dict)
     gate: GateConfig = field(default_factory=GateConfig)
@@ -115,6 +117,8 @@ def config_from_dict(d: Dict[str, Any], root: Path, source: Optional[Path] = Non
         root=Path(root),
         name=str(project.get("name", root.name)),
         python=str(project.get("python", "python")),
+        goal=str(project.get("goal", "")),
+        focus=str(project.get("focus", "")),
         kinds={str(k): str(v) for k, v in dict(d.get("kinds", {})).items()},
         out={str(k): str(v) for k, v in dict(d.get("out", {})).items()},
         gate=_dc(GateConfig, dict(d.get("gate", {}))),

@@ -35,7 +35,7 @@ from rl_researcher.blocks.live import duration
 from rl_researcher.kinds import LogVocab, RunKind
 from rl_researcher.spec import RunSpec
 from rl_researcher.status import RunStatus, run_status
-from rl_researcher.units import UnitState, read_json
+from rl_researcher.units import STALE_FACTOR, UnitState, read_json
 
 REFRESH_SECONDS = 15
 
@@ -109,10 +109,10 @@ def last_of(unit: UnitState, keys: Sequence[str]) -> Dict[str, Any]:
     return {k: (last.get(k) if k in last else unit.progress.get(k)) for k in keys}
 
 
-def collect(spec: RunSpec, kind: RunKind, out: Path) -> DashboardData:
+def collect(spec: RunSpec, kind: RunKind, out: Path, *, stale_factor: float = STALE_FACTOR) -> DashboardData:
     """Everything the page needs, from the files the run already writes."""
     out = Path(out)
-    st = run_status(spec, kind, out)
+    st = run_status(spec, kind, out, stale_factor=stale_factor)
     total = done = 0
     elapsed = 0.0
     for u in st.units:
@@ -147,7 +147,14 @@ def collect(spec: RunSpec, kind: RunKind, out: Path) -> DashboardData:
 
 def tail(path: Path, keep: int = 200) -> List[str]:
     try:
-        return path.read_text(encoding="utf-8", errors="replace").splitlines()[-keep:]
+        with path.open("rb") as stream:
+            size = stream.seek(0, 2)
+            start = max(0, size - 131072)
+            stream.seek(start)
+            lines = stream.read().decode("utf-8", errors="replace").splitlines()
+            if start:
+                lines = lines[1:]
+            return lines[-keep:]
     except OSError:
         return []
 
@@ -460,7 +467,7 @@ def live_panel(spec: RunSpec, kind: RunKind, data: DashboardData) -> List[Any]:
             arm=u.arm, seed=int(u.seed), state=state, tone=tone,
             step=int(u.step or 0),
             max_steps=int(u.max_steps or spec.budget.max_steps or 1),
-            rate=float(u.rate or 0.0), eta_seconds=u.eta_seconds,
+            rate=u.rate, eta_seconds=u.eta_seconds,
             colour=ps.variant_color(u.arm, list(data.order)),
             curves=tuple((c.title, tuple(history.get(c.key, [])), last.get(c.key),
                           floors.get(c.key)) for c in curves),
@@ -671,10 +678,22 @@ def log_panel(spec: RunSpec, kind: RunKind, data: DashboardData) -> List[Any]:
 #: found, what it is measuring, how the arms compare, what is happening now, what went wrong,
 #: what has not started, what has finished, and the log underneath all of it.
 DEFAULT_SECTIONS: Tuple[str, ...] = (
-    "headline", "metrics", "arms", "running", "failed", "queued", "finished", "log")
+    "failed", "headline", "running", "metrics", "arms", "queued", "finished", "log")
+
+
+def outcome_panel(spec: RunSpec, kind: RunKind, data: DashboardData) -> List[Any]:
+    from rl_researcher.artefacts.overview import research_summary
+    from rl_researcher.blocks.disclosure import ResearchOutcome
+
+    summary = data.summary or {"runs": [u.result for u in data.units if u.result]}
+    provisional = data.status.state != "finished" or any(
+        (u.result or {}).get("status") == "incomplete" for u in data.units)
+    research = research_summary(spec, summary, provisional=provisional,
+                                 registry=getattr(kind, "registry", None))
+    return [ResearchOutcome(text=research["markdown"])] if research["markdown"] else []
 
 SECTIONS: Dict[str, Callable[[RunSpec, RunKind, DashboardData], List[Any]]] = {
-    "headline": lead_panel,
+    "headline": outcome_panel,
     "metrics": metric_lanes,
     "arms": arm_panel,
     "running": live_panel,
@@ -773,8 +792,16 @@ def render(spec: RunSpec, kind: RunKind, data: DashboardData, *, refresh: bool =
     blocks: List[Any] = [page_tiles(spec, kind, data),
                          Progress(fraction=data.done_steps / max(data.total_steps, 1),
                                   label="budget")]
+    from rl_researcher.blocks.disclosure import Disclosure
+
+    labels = {"metrics": "All metrics", "arms": "Arm comparison", "queued": "Queued units",
+              "finished": "Completed units", "log": "Run log"}
     for name in sections_of(kind):
-        blocks += section(name, spec, kind, data)
+        items = section(name, spec, kind, data)
+        if name in labels and items:
+            blocks.append(Disclosure(title=labels[name], blocks=items))
+        else:
+            blocks += items
     blocks.append(page_foot(spec, kind, data, refresh=refresh))
     page = Page(kind="dashboard", title=f"{spec.name} · {kind.name} dashboard",
                 blocks=blocks, chip_text=f"{data.status.state}{beat}",

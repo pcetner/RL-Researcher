@@ -94,6 +94,7 @@ class Finding:
     touches: List[str] = field(default_factory=list)     # plan decisions, e.g. ["D4", "§8.4"]
     supersedes: List[str] = field(default_factory=list)
     note: str = ""
+    choices: List[str] = field(default_factory=list)  # explicit human choices on decision rows
 
     def to_json(self) -> Dict[str, Any]:
         d = asdict(self)

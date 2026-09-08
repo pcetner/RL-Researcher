@@ -661,7 +661,8 @@ def test_the_whole_page_fetches_nothing(toy):
         assert bad not in page, bad
     # `url(#...)` is a reference to a pattern defined in this same document; a `url(` with a
     # scheme after it would not be.
-    assert not re.search(r"url\(\s*['\"]?[a-z]+:", page)
+    assert not re.search(r"url\(\s*['\"]?(?!data:font/)[a-z]+:", page)
+    assert "data:font/otf;base64," in page
 
 
 def test_the_theme_script_is_opened_exactly_once(toy):

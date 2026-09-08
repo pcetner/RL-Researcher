@@ -74,10 +74,12 @@ class StateView:
     #: cannot see a spec until it has been run has no way to offer to run it.
     ready: List[Dict[str, Any]] = field(default_factory=list)
     health: Dict[str, Any] = field(default_factory=dict)
+    context: Dict[str, Any] = field(default_factory=dict)
+    findings: List[Dict[str, Any]] = field(default_factory=list)
 
     def to_json(self) -> Dict[str, Any]:
         return {
-            "project": self.project, "generated": self.generated,
+            "project": self.project, "generated": self.generated, "context": self.context, "findings": self.findings,
             "waiting": [w.__dict__ for w in self.waiting],
             "running": self.running, "queued": self.queued,
             "decided": self.decided, "ready": self.ready, "health": self.health,
@@ -204,7 +206,8 @@ def _headline(spec: Any, summary: Dict[str, Any], limit: int = 4) -> List[str]:
     return rows
 
 
-def build_state(config: Config, *, ledger: Optional[Ledger] = None) -> StateView:
+def build_state(config: Config, *, ledger: Optional[Ledger] = None,
+                history_limit: Optional[int] = 5) -> StateView:
     """Read every spec, every run's status and every decision stub, and assemble the view.
 
     Every spec ends up in exactly one of the five lists, including the ones that have never been
@@ -230,8 +233,20 @@ def build_state(config: Config, *, ledger: Optional[Ledger] = None) -> StateView
         artefact = out / "README.md"
         if st.finished and summary_path.is_file():
             body = _decision_region(artefact)
-            if not ticked(body):
-                summary = json.loads(summary_path.read_text(encoding="utf-8"))
+            summary = json.loads(summary_path.read_text(encoding="utf-8"))
+            reading = section(artefact.read_text(encoding="utf-8"), "Reading") if artefact.is_file() else None
+            reading = re.sub(r"<!--.*?-->", "", reading or "", flags=re.S).strip()
+            if "write here:" in reading[:30]:
+                reading = ""
+            from rl_researcher.presentation import hypothesis_view
+            finding_copy = hypothesis_view(config.root, spec.name, spec.hypothesis)["finding_summary"]
+            view.findings.append({"run": spec.name, "date": _finished_at(st),
+                                  "summary": finding_copy or (reading.split("\n\n")[0] if reading else _outcome_line(spec, summary)),
+                                  "source": "Report reading" if reading else "Registered outcome"})
+            recorded = [r for r in ledger.query(kind="decision", run=spec.name)
+                        if r.fingerprint == str(summary.get("fingerprint", ""))
+                        and r.commit == str(summary.get("git_sha", ""))[:12]]
+            if not recorded:
                 view.waiting.append(Waiting(
                     run=spec.name, kind=kind_name,
                     artefact=_rel(config, artefact),
@@ -241,17 +256,28 @@ def build_state(config: Config, *, ledger: Optional[Ledger] = None) -> StateView
                     finished=_finished_at(st),
                 ))
             else:
-                view.decided.append({"run": spec.name, "chose": ticked(body),
+                view.decided.append({"run": spec.name, "chose": recorded[-1].choices or ticked(body),
+                                     "id": recorded[-1].id,
+                                     "date": recorded[-1].date,
                                      "artefact": _rel(config, artefact)})
         elif st.state != "not started":
             view.running.append(_running_row(config, spec, st, out))
         else:
+            from rl_researcher.gate import decide as gate_decide
+            gate = gate_decide(spec, kind, config, out=out)
             view.ready.append({"run": spec.name, "kind": kind_name,
                                "spec": _rel(config, spec_path),
-                               "units": len(st.units)})
+                               "units": len(st.units), "approval_needed": gate.gated and not gate.approved,
+                               "wall_seconds": gate.cost.wall_seconds})
 
+    plan = config.path("plan").resolve()
+    view.context = {"goal": config.goal, "focus": config.focus,
+                    "plan": plan.relative_to(config.root.resolve()).as_posix()
+                    if plan.is_relative_to(config.root.resolve()) and plan.is_file() else ""}
+    view.findings.sort(key=lambda item: item["date"], reverse=True)
+    view.findings = view.findings[:3]
     view.queued = _queue(config)
-    view.decided = _recent_decisions(ledger, view.decided)
+    view.decided = _recent_decisions(ledger, view.decided, limit=history_limit)
     view.health.update(_health(config, ledger))
     return view
 
@@ -285,8 +311,13 @@ def _running_row(config: Config, spec: Any, st: RunStatus, out: Path) -> Dict[st
     live = [u for u in st.units if u.live]
     ages = [u.age for u in live if u.age is not None]
     etas = [u.eta_seconds for u in live if u.eta_seconds is not None]
+    attention_times = [stamp_of(u.progress.get("updated")) for u in st.units
+                       if u.failed or u.stale or u.status in ("stopped", "incomplete")]
+    known_times = [stamp for stamp in attention_times if stamp is not None]
     return {
         "run": spec.name,
+        "state": st.state,
+        "since": min(known_times).isoformat() if known_times else "",
         "done": st.done, "total": len(st.units),
         "heartbeat_age": _fmt_duration(min(ages) if ages else None),
         "eta": _fmt_duration(max(etas) if etas else None),
@@ -308,14 +339,19 @@ def _queue(config: Config) -> List[Dict[str, Any]]:
     return [dict(e) for e in data.get("entry", [])]
 
 
-def _recent_decisions(ledger: Ledger, from_stubs: List[Dict[str, Any]], limit: int = 5) -> List[Dict[str, Any]]:
+def _recent_decisions(ledger: Ledger, from_stubs: List[Dict[str, Any]],
+                      limit: Optional[int] = 5) -> List[Dict[str, Any]]:
     rows: List[Dict[str, Any]] = [
-        {"run": r.run, "chose": [r.note] if r.note else [], "date": r.date, "id": r.id}
-        for r in ledger.query(kind="decision")]
+        {"run": r.run, "chose": r.choices or ([r.note] if r.note else []), "date": r.date, "id": r.id}
+        for r in reversed(ledger.query(kind="decision"))]
     rows.sort(key=lambda r: str(r["date"]), reverse=True)
-    seen = {r["run"] for r in rows}
-    rows += [d for d in from_stubs if d["run"] not in seen]
-    return rows[:limit]
+    current = {d["run"]: d for d in from_stubs}
+    unique: Dict[str, Dict[str, Any]] = {}
+    for row in rows:
+        unique.setdefault(row["run"], current.get(row["run"], row))
+    for row in from_stubs:
+        unique.setdefault(row["run"], row)
+    return list(unique.values())[:limit]
 
 
 def _health(config: Config, ledger: Ledger) -> Dict[str, Any]:

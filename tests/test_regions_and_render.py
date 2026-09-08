@@ -170,7 +170,8 @@ def test_boxes_are_numbered_in_the_order_the_options_are_read_in():
 
 def test_the_source_of_the_region_is_carried_verbatim_for_writing_back():
     html = editable_article(DECIDABLE, kind="report", run="r1")
-    src = html.split('class="authored-src" spellcheck="true">')[1].split("</textarea>")[0]
+    src = html.split('class="authored-src"')[1].split(">", 1)[1].split("</textarea>")[0]
+    assert 'aria-label="Edit decision"' in html
     assert src == regions.body_of(DECIDABLE, "authored", "decision").replace("&", "&amp;")
 
 
