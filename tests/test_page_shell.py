@@ -14,13 +14,21 @@ import pytest
 
 pytestmark = pytest.mark.tier1
 
+from pathlib import Path  # noqa: E402
+
 from rl_researcher.blocks import Page, Tiles  # noqa: E402
+from rl_researcher.config import Config  # noqa: E402
 from rl_researcher.render import md_to_html  # noqa: E402
+from rl_researcher.serve import page as served_page  # noqa: E402
 from rl_researcher.style import BASE_CSS, THEME_BUTTONS, THEME_SCRIPT  # noqa: E402
 
+# Three renderers build a whole document: the markdown artefacts, the block pages, and the
+# dashboard. All three are held to the same shell rules here rather than each being trusted,
+# which is how a malformed script tag reached every page in the package the first time.
 PAGES = {
     "md_to_html": md_to_html("# t\n\ntext\n", kind="report", title="t"),
     "Page.html": Page(kind="dashboard", title="t", blocks=[Tiles(items=[("1", "a")])]).html(),
+    "serve.page": served_page(Config(root=Path("."), name="t")),
 }
 IDS = sorted(PAGES)
 

@@ -138,12 +138,25 @@ def write(artefact: Artefact, md_path: Path, *, html: bool = True,
     assert_layout(fresh, artefact.kind)
     atomic.write_text(md_path, fresh)
     if html:
-        atomic.write_text(
-            Path(html_path) if html_path is not None else md_path.with_suffix(".html"),
-            md_to_html(strip_regions(fresh), kind=artefact.kind, title=artefact.title,
-                       subtitle=subtitle or f"generated {stamp_now()}",
-                       embed_images_from=md_path.parent))
+        render_page(md_path, fresh, kind=artefact.kind, title=artefact.title,
+                    subtitle=subtitle, html_path=html_path)
     return md_path
+
+
+def render_page(md_path: Path, text: str, *, kind: str, title: str, subtitle: str = "",
+                html_path: Optional[Path] = None) -> Path:
+    """The page beside a markdown artefact, rendered from that markdown's text.
+
+    The second half of :func:`write`, on its own, because a caller that has edited one region of
+    a document by hand needs the page brought back into step without regenerating the tables and
+    re-plotting the figures around it. There is one renderer for an exported page and this is it:
+    a second one would be a second way to format a number.
+    """
+    target = Path(html_path) if html_path is not None else Path(md_path).with_suffix(".html")
+    atomic.write_text(target, md_to_html(strip_regions(text), kind=kind, title=title,
+                                         subtitle=subtitle or f"generated {stamp_now()}",
+                                         embed_images_from=Path(md_path).parent))
+    return target
 
 
 def stamp(*, run: str = "", fingerprint: str = "", commit: str = "", data: str = "",

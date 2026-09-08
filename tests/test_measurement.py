@@ -209,3 +209,32 @@ def test_a_kind_that_declares_almost_nothing_still_gets_a_document(project):
     text = write_measurement(spec, {}, out, kind=Bare()).read_text(encoding="utf-8")
     assert check_layout(text, "measurement") == []
     assert "Is it?" in text                       # the hypothesis stands in for the question
+
+
+def test_report_names_the_page_it_actually_wrote(measured, capsys):
+    """A measurement's page is `README.html`, and `report` used to announce `report.html`.
+
+    The name was hardcoded in the command while the writer derived it from the stem, so every
+    measurement this package ever wrote printed a path that was not there -- and the one place
+    that knows which writer a kind gets is the only place that can know what its page is called.
+    """
+    from rl_researcher.artefacts import page_for
+    from rl_researcher.report import main as report_main
+
+    config, kind, spec, out = measured
+    assert report_main(["toy-measure"]) == 0
+    printed = [ln.split("->", 1)[1].strip() for ln in capsys.readouterr().out.splitlines()
+               if ln.startswith("page")]
+    assert printed and Path(printed[0]).is_file(), printed
+    assert Path(printed[0]).name == "README.html"
+    assert page_for(out / "README.md", kind) == out / "README.html"
+
+
+def test_page_for_follows_the_same_dispatch_the_writer_does():
+    """Report and measurement, from the one place that decides between their writers."""
+    from rl_researcher.artefacts import page_for
+    from rl_researcher.examples.toy.kind import ToyKind
+
+    assert page_for(Path("d/README.md"), ToyKind()).name == "report.html"
+    assert page_for(Path("d/README.md"), Counting()).name == "README.html"
+    assert page_for(Path("d/README.md")).name == "report.html", "no kind reads as a report"
