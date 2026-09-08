@@ -290,7 +290,9 @@ def test_stopping_signals_the_process_that_holds_the_directory(reported, monkeyp
     _hold(out)
     sent = []
     monkeypatch.setattr(serve, "_windows", lambda: False)
-    monkeypatch.setattr(serve.os, "kill", lambda pid, sig: sent.append((pid, sig)))
+    # `serve._signal`, not `os.kill`: on POSIX the liveness probe in `lock.process_alive`
+    # is the same call, so patching `os.kill` would record a question nobody here asked.
+    monkeypatch.setattr(serve, "_signal", lambda pid, sig: sent.append((pid, sig)))
 
     code, said = _post(config, "/api/stop", {"run": RUN})
     assert code == 200 and sent == [(os.getpid(), signal.SIGTERM)]
@@ -303,7 +305,7 @@ def test_on_windows_stopping_says_what_it_costs_before_it_does_it(reported, monk
     _hold(out)
     sent = []
     monkeypatch.setattr(serve, "_windows", lambda: True)
-    monkeypatch.setattr(serve.os, "kill", lambda pid, sig: sent.append((pid, sig)))
+    monkeypatch.setattr(serve, "_signal", lambda pid, sig: sent.append((pid, sig)))
 
     code, said = _post(config, "/api/stop", {"run": RUN})
     assert code == 409 and said["needs"] == "kill" and not sent
@@ -317,7 +319,8 @@ def test_on_windows_stopping_says_what_it_costs_before_it_does_it(reported, monk
 def test_a_lock_left_by_a_dead_process_is_not_something_to_signal(reported, monkeypatch):
     config, out = reported
     _hold(out, pid=999_999)
-    monkeypatch.setattr(serve.os, "kill", lambda pid, sig: pytest.fail("signalled a dead pid"))
+    monkeypatch.setattr(serve, "_signal",
+                        lambda pid, sig: pytest.fail("signalled a dead pid"))
     code, said = _post(config, "/api/stop", {"run": RUN})
     assert code == 409 and "stale" in said["error"]
 
@@ -325,7 +328,8 @@ def test_a_lock_left_by_a_dead_process_is_not_something_to_signal(reported, monk
 def test_a_run_on_another_machine_is_not_ours_to_signal(reported, monkeypatch):
     config, out = reported
     _hold(out, host="some-other-box")
-    monkeypatch.setattr(serve.os, "kill", lambda pid, sig: pytest.fail("signalled another host"))
+    monkeypatch.setattr(serve, "_signal",
+                        lambda pid, sig: pytest.fail("signalled another host"))
     code, said = _post(config, "/api/stop", {"run": RUN})
     assert code == 409 and "some-other-box" in said["error"]
 
