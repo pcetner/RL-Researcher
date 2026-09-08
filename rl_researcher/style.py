@@ -10,6 +10,9 @@ been claimed by a block.
 
 from __future__ import annotations
 
+import base64
+from pathlib import Path
+
 from rl_researcher import plotstyle as ps
 
 
@@ -30,6 +33,15 @@ def tint(token: str, pct: int) -> str:
 THEME_SCRIPT = """
 (function () {
   var KEY = 'rl-theme', POS = 'rl-scroll-' + location.pathname;
+  var printed = [];
+  addEventListener('beforeprint', function () {
+    printed = Array.from(document.querySelectorAll('details:not([open])'));
+    printed.forEach(function (d) { d.open = true; });
+  });
+  addEventListener('afterprint', function () {
+    printed.forEach(function (d) { d.open = false; });
+    printed = [];
+  });
   function apply(mode) {
     if (mode === 'system') document.documentElement.removeAttribute('data-theme');
     else document.documentElement.setAttribute('data-theme', mode);
@@ -41,6 +53,14 @@ THEME_SCRIPT = """
   try { saved = localStorage.getItem(KEY) || 'system'; } catch (e) {}
   apply(saved);
   addEventListener('DOMContentLoaded', function () {
+    document.querySelectorAll('details[data-disclosure]').forEach(function (d) {
+      var key = POS + '-detail-' + d.dataset.disclosure;
+      try { if (sessionStorage.getItem(key) === 'open') d.open = true; } catch (e) {}
+      d.addEventListener('toggle', function () {
+        if (printed.length) return;
+        try { sessionStorage.setItem(key, d.open ? 'open' : 'closed'); } catch (e) {}
+      });
+    });
     apply(saved);
     var b = document.querySelectorAll('.theme button');
     for (var i = 0; i < b.length; i++) b[i].addEventListener('click', function () {
@@ -88,11 +108,13 @@ BASE_CSS = f"""
   }}
   * {{ box-sizing:border-box }}
   body {{ margin:0; background:var(--ground); color:var(--ink);
-    font:14px/1.5 ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif; }}
+    font:14px/1.5 "Source Sans 3",ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif; }}
   /* No width cap: the panels here are tables and axes, which use whatever room there
      is. A measure limit belongs on running prose, and there is none on this page. */
   .wrap {{ margin:0 auto; padding:24px 20px 56px }}
-  a {{ color:var(--accent) }}
+  a {{ color:inherit; text-decoration:none }}
+  a:hover {{ color:var(--ink); background:var(--code) }}
+  a:focus-visible {{ outline:2px solid var(--ink); outline-offset:3px }}
   h1 {{ font-size:19px; margin:0; letter-spacing:-0.01em }}
   h2 {{ font-size:11px; text-transform:uppercase; letter-spacing:0.07em; color:var(--muted);
     margin:0; padding:10px 14px; border-bottom:1px solid var(--line); font-weight:600 }}
@@ -151,3 +173,11 @@ EDIT_CSS = f"""
   .authored-said {{ font-size:11.5px; color:var(--muted); flex:1 }}
   .authored-said.bad {{ color:var(--crit) }}
 """
+
+
+# Embedded fonts keep exported reports and the local board independent of network access.
+for _weight, _name in ((400, "Regular"), (600, "Semibold")):
+    _font = base64.b64encode((Path(__file__).parent / "ui" / "fonts" /
+                             f"SourceSans3-{_name}.otf").read_bytes()).decode("ascii")
+    BASE_CSS += (f'@font-face {{ font-family:"Source Sans 3"; font-weight:{_weight}; '
+                 f'font-style:normal; font-display:swap; src:url(data:font/otf;base64,{_font}) format("opentype"); }}')
