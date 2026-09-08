@@ -113,8 +113,9 @@ Exit 0 always. The page is a report, not a check.
 
 ### `report <spec> [--out DIR] [--no-ledger]`
 
-Reads `<out>/results.json` and writes `README.md` and `report.html` beside it, together with a
-registered ledger row for every arm and metric. Nothing is recomputed and nothing is re-run.
+Reads `<out>/results.json` and writes `README.md` and its page beside it (`report.html` for a
+report, `README.html` for a measurement), together with a registered ledger row for every arm
+and metric. Nothing is recomputed and nothing is re-run.
 
 Safe to repeat, and meant to be: a page only the process that produced it can produce is a page
 nobody can check. Regenerating rewrites the generated sections, leaves the reading and the
@@ -139,6 +140,26 @@ regenerates the state page. It needs a report to read, so run `report` first.
 
 Exit 0, or 1 if no box is ticked. A decision the runner invents is not a decision, so the command
 refuses rather than guessing, and prints the options the stub offers.
+
+### `serve [--port 7777] [--open]`
+
+One local page with the board on the left and one run on the right, from which every verb above
+is a button: edit any authored region, record the decision, write the approval, start or stop a
+run, regenerate the report, follow the log.
+
+The markdown on disk stays the source of truth. It is an editor over those files and never a
+second copy of them, so nothing is stranded when the server stops and every command still works
+exactly as it did. There is no research logic in it: each endpoint is a shim over the module that
+already did the job, and every refusal — an unticked box, a missing approval, a run over the gate
+line — is the same refusal, in the same words, as the command line's.
+
+Binds `127.0.0.1` only. A write is rejected when the `Origin` header says it came from anywhere
+but this page, and when `Host` is not localhost: a server on your laptop is not private, and a
+decision, an approval and a launch are not things another site gets to do on your behalf.
+
+Stopping a run is a clean hot-stop on POSIX (SIGTERM, which the unit checks between steps). On
+Windows there is no SIGTERM for a console process, so the button kills instead and says so — the
+last cadence checkpoint survives, the step in flight is lost.
 
 ### `ledger_cli show [--touches D] [--metric M] [--run R] [--kind K] [--data D]`
 

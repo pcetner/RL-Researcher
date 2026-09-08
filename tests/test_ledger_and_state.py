@@ -294,3 +294,58 @@ def test_the_state_page_is_built_by_the_writer_like_every_other_artefact(project
     regions = {r.arg for r in find(text) if r.kind == "generated"}
     assert regions == {s.region for s in LAYOUTS["state"].sections}
     assert "kind=state" in text.split("\n", 1)[0]
+
+
+def test_a_decision_recorded_through_the_library_matches_one_typed_at_a_terminal(project):
+    """`record` is what the dashboard calls, and `via` must be the only thing that differs.
+
+    A row recorded from a browser has to be worth exactly as much as one typed by hand: the
+    same commit, the same fingerprint, the same claim. So the two are compared field by field
+    and `via` is the only difference allowed.
+    """
+    from dataclasses import asdict
+
+    from rl_researcher.config import kind_for, load_config
+    from rl_researcher.decide import record
+
+    out = _finish_a_run(project)
+    report = out / "README.md"
+    report.write_text("# toy\n\n<!-- authored: decision -->\n- [x] go\n<!-- /authored -->\n",
+                      encoding="utf-8")
+    config = load_config()
+    kind = kind_for(project / SPEC, config)
+    spec = kind.load(project / SPEC)
+
+    typed = record(config, spec, out, note="because the hinge held")
+    assert typed.code == 0 and typed.chose == ["go"] and typed.finding
+    row = open_ledger(config).query(kind="decision")[0]
+    assert row.via == "cli" and row.note == "because the hinge held"
+    assert row.commit and row.fingerprint, "provenance comes from the run, not from the caller"
+
+    # The dashboard's row. Same claim, so the ledger's identity dedup returns the row already
+    # on file rather than writing a second one -- which is itself the guarantee being checked.
+    from_page = record(config, spec, out, note="because the hinge held", via="dashboard")
+    assert from_page.code == 0
+    again = open_ledger(config).query(kind="decision")
+    assert len(again) == 1, "one claim, one row, whoever asked"
+
+    differ = {k for k, v in asdict(row).items() if v != asdict(again[0])[k]}
+    assert differ <= {"via"}, differ
+
+
+def test_the_librarys_refusal_is_worded_once_and_carries_the_options(project):
+    """The command prints it and the dashboard lays it out; neither one writes its own."""
+    from rl_researcher.config import kind_for, load_config
+    from rl_researcher.decide import record
+
+    out = _finish_a_run(project)
+    (out / "README.md").write_text(
+        "# toy\n\n<!-- authored: decision -->\n- [ ] go\n- [ ] stop\n<!-- /authored -->\n",
+        encoding="utf-8")
+    config = load_config()
+    kind = kind_for(project / SPEC, config)
+    decision = record(config, kind.load(project / SPEC), out)
+    assert decision.code == 1
+    assert decision.options == ["go", "stop"]
+    assert "no box is ticked" in decision.message and "go, stop" in decision.message
+    assert not open_ledger(config).query(kind="decision")

@@ -19,7 +19,7 @@ import re
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from rl_researcher import atomic
+from rl_researcher.regions import Region, split
 from rl_researcher.style import BASE_CSS, THEME_BUTTONS, THEME_SCRIPT
 
 #: Over this, a PNG is re-encoded as JPEG before being inlined. A report with twenty rollout
@@ -159,39 +159,96 @@ def md_to_html(markdown: str, *, kind: str, title: str, embed_images_from: Optio
     )
 
 
-def write_html(md_path: Path, html_path: Optional[Path] = None, *, kind: str = "report",
-               title: Optional[str] = None, subtitle: str = "") -> Path:
-    """Render a markdown artefact to the HTML file beside it. Images resolve relative to the
-    markdown file, which is where the run wrote them."""
-    md_path = Path(md_path)
-    html_path = Path(html_path) if html_path is not None else md_path.with_suffix(".html")
-    text = md_path.read_text(encoding="utf-8")
-    if title is None:
-        m = re.search(r"(?m)^#\s+(.+?)\s*$", text)
-        title = m.group(1) if m else md_path.stem
-    atomic.write_text(html_path, md_to_html(text, kind=kind, title=title, subtitle=subtitle,
-                                            embed_images_from=md_path.parent))
-    return html_path
-
-
 def strip_regions(text: str) -> str:
     """The document with its region markers removed, for rendering: they are bookkeeping, and
     a reader of the page never needs to see them."""
     return re.sub(r"[ \t]*<!--\s*/?(?:generated|authored|ledger|rl)\b[^>]*-->[ \t]*\n?", "", text)
 
 
-def render_artefact(md_path: Path, *, kind: str, subtitle: str = "") -> Path:
-    """``write_html`` with the region markers taken out first."""
-    md_path = Path(md_path)
-    text = strip_regions(md_path.read_text(encoding="utf-8"))
-    m = re.search(r"(?m)^#\s+(.+?)\s*$", text)
-    title = m.group(1) if m else md_path.stem
-    html_path = md_path.with_suffix(".html")
-    atomic.write_text(html_path, md_to_html(text, kind=kind, title=title, subtitle=subtitle,
-                                            embed_images_from=md_path.parent))
-    return html_path
-
-
 def facts_in(text: str) -> Dict[str, Any]:
     """The ledger ids a document cites, for the lint that says a stated number must have one."""
     return {"ids": sorted(set(re.findall(r"\[(F\d{4})\]", text)))}
+
+
+#: A markdown task box as markdown-it leaves it: ``<li>[ ] go`` in a tight list, ``<li><p>[ ] go``
+#: in a loose one. Commonmark has no task-list extension and this package does not enable one,
+#: because the box has to survive as ``- [ ]`` in the file -- that text *is* the input `decide`
+#: reads. So the box is put back at render time, here, and only for a served page.
+_BOX = re.compile(r"(<li>\s*(?:<p>\s*)?)\[([ xX])\]\s*")
+
+
+def _checkboxes(html: str) -> str:
+    """Every task box in ``html`` as a real checkbox, numbered in document order.
+
+    The number, not the label, is what the box is addressed by: a kind may write its own
+    decision stub (``go`` / ``iterate`` / ``stop`` is only the run report's), labels carry
+    markup and em-dashes, and two options could reasonably share a word. The nth box here is
+    the nth ``- [ ]`` line of the region body, which is the same order
+    :func:`artefacts.state.options` reads them in.
+    """
+    n = 0
+
+    def one(m: "re.Match[str]") -> str:
+        nonlocal n
+        checked = " checked" if m.group(2).lower() == "x" else ""
+        box = f'<input type="checkbox" class="tick" data-option="{n}"{checked}>'
+        n += 1
+        return m.group(1) + box + " "
+
+    return _BOX.sub(one, html)
+
+
+def _authored_section(md: Any, region: Region, run: str) -> str:
+    """One authored region as an editable block: the rendered text, and the source behind it.
+
+    Both are emitted, and the *source* is what gets submitted. The checkboxes and the prose view
+    are a convenience over the textarea, not a second representation of it -- which is why
+    nothing on the server has to understand the tick grammar, and why a region whose body is a
+    kind's own stub, or free prose, or a table, edits exactly as well as a decision box does.
+    """
+    body = region.body
+    return (
+        f'<section class="authored" data-region="{html_mod.escape(region.arg, quote=True)}"'
+        f' data-run="{html_mod.escape(run, quote=True)}">\n'
+        f'<div class="authored-head"><span class="authored-name">'
+        f'{html_mod.escape(region.arg)}</span>'
+        f'<span class="authored-hint">yours to write; kept word for word when the run is '
+        f'regenerated</span>'
+        f'<button type="button" class="authored-edit">edit</button></div>\n'
+        f'<div class="authored-view">\n{_checkboxes(md.render(body))}</div>\n'
+        f'<textarea class="authored-src" spellcheck="true">'
+        f'{html_mod.escape(body)}</textarea>\n'
+        f'<div class="authored-actions"><button type="button" class="authored-save">save</button>'
+        f'<button type="button" class="authored-revert">revert</button>'
+        f'<span class="authored-said"></span></div>\n'
+        f"</section>\n"
+    )
+
+
+def editable_article(text: str, *, kind: str, run: str = "",
+                     embed_images_from: Optional[Path] = None) -> str:
+    """The document as an article in which its authored regions are still addressable.
+
+    The exported page strips every marker (:func:`strip_regions`), which is right for a page
+    that is read and wrong for one that is worked in: with the markers gone the page cannot say
+    where the decision region starts, so a ticked box is inert text and the only way to decide
+    anything is to open the markdown in an editor and count lines. Here the generated and ledger
+    regions are still stripped -- a reader never needs them -- and each authored region survives
+    as a ``<section data-region=...>`` the page can read back and write to.
+
+    Nothing in the export path calls this. That is the point: an exported page is byte for byte
+    what it has always been, and there is no flag on the shared writer that could be set wrongly
+    and put an input into an archived report.
+    """
+    md = _renderer(embed_images_from)
+    out = []
+    for part in split(text):
+        if isinstance(part, Region):
+            out.append(_authored_section(md, part, run) if part.kind == "authored"
+                       else md.render(part.body))
+        else:
+            rest = strip_regions(part)
+            if rest.strip():
+                out.append(md.render(rest))
+    return (f'<article class="doc kind-{html_mod.escape(kind)}">\n'
+            + "\n".join(out) + "\n</article>\n")
