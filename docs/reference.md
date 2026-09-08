@@ -124,6 +124,12 @@ decision as they were written, and writes no ledger row whose identity is alread
 `run` does not call this. A project that wants a report written as a run ends does it from its
 kind's `summarise`.
 
+When the spec is the project's canary, this is also what records that it passed, into
+`<ledger>/canary.json` — see [`[canary]`](#configuration) below. The record is written here
+rather than at the end of the run because the canary's exercise is `check` → `run` → `status` →
+`report`, and a canary that produced numbers but could not be written up did not prove the
+machinery works.
+
 Exit 0, or 1 if the run has no `results.json` yet.
 
 ### `decide <spec> [--out DIR] [--note "..."]`
@@ -301,6 +307,12 @@ top-level tables, are currently ignored.
 could act on it being on, because starting queued work is a decision. Everything else in the
 file is consumed.
 
+`canary.spec` may be written as a path (`studies/canary.toml`), as a bare name (`canary`), or
+with the extension (`canary.toml`); all three name the same spec, and the run they name is
+exempt from C09 rather than being asked to be fresher than itself. `canary.watched` is a list of
+paths relative to the project root, compared against the *working tree* — so an uncommitted
+change to a watched file makes the canary stale immediately, which is the intended reading.
+
 ## Spec format
 
 ```toml
@@ -461,6 +473,18 @@ units = 18
 
 One line per finished unit: the kind, the unit class, the device fingerprint and name, the
 seconds per unit and per step, the steps, the status, the run, the unit and the date.
+
+### `docs/ledger/canary.json`
+
+One object: `commit`, `date`, `run`, `rl_researcher`, `device`, `wall_seconds` and `units`. What
+C09 and the state page's Health section read.
+
+Written by `report`, and only when three things hold — the spec is the project's canary, every
+unit completed with none missing, and git can name the commit the run happened at. A canary run
+that fails any of them records nothing and says which, on stdout. The third condition is the
+load-bearing one: a result recorded without a resolvable commit reads as fresh forever, because
+the staleness comparison cannot run against it, and a comparison that cannot run is not a
+comparison that passed.
 
 ### `docs/ledger/findings.jsonl`
 
