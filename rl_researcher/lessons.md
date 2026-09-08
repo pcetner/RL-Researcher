@@ -1,6 +1,6 @@
 # Lessons
 
-Twenty things that went wrong, and what each one is now a rule about.
+Twenty-one things that went wrong, and what each one is now a rule about.
 
 This file exists because rules stated without their history get argued past, and rules stated
 *as* their history get misread. So every entry has both, and they are kept apart: **What
@@ -302,3 +302,27 @@ A learning-progress reward built on the same signal inherits the same fault, bec
 same signal differentiated.
 
 **Check: prose only**
+
+---
+
+### L021 — 2026-09-07 — a check that enforced an artefact nothing produced
+
+**What happened.** C09 asks whether the canary passed at a commit no older than the last change
+to the machinery. It reads `<ledger>/canary.json`, and so does the state page's Health section.
+Nothing in the package ever wrote that file. The check could only ever report "no canary result
+on file", in every project, and the page could only ever print "never run".
+
+What kept it hidden was the test. It hand-wrote `canary.json` itself and then asserted the
+reader responded to it: the reader was covered, the writer did not exist, and the suite was
+green. The neighbouring case was worse still. It wrote commit `000…0` and asserted the check
+went quiet — and the check went quiet because `git diff` cannot resolve that commit and a git
+error was being read as "nothing changed". Both halves passed for the wrong reason.
+
+**Rule.** A test for a reader must consume what the writer produced. Hand-writing the artefact
+under test proves only that the reader parses JSON. And an artefact the tooling enforces but
+does not produce has to be declared as absent where a user reads it, rather than left to be
+discovered by someone wondering why a check never has anything to say.
+
+**Check: prose only** — `tests/test_artefacts.py` asserts that every artefact kind the layouts
+enforce has a producer in the package, and that each deliberate exception is admitted in the
+README's "What is not built yet".
