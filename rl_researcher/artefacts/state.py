@@ -306,15 +306,12 @@ def _recent_decisions(ledger: Ledger, from_stubs: List[Dict[str, Any]], limit: i
 
 
 def _health(config: Config, ledger: Ledger) -> Dict[str, Any]:
+    from rl_researcher.canary import read_canary
     from rl_researcher.cost import read_throughput
 
-    canary = {}
-    canary_path = config.path("ledger") / "canary.json"
-    if canary_path.is_file():
-        try:
-            canary = json.loads(canary_path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            canary = {}
+    # Through the one reader, so the page and C09 cannot disagree about what an unreadable or
+    # absent canary result means.
+    canary = read_canary(config)
     watcher = {}
     tick = config.path("logs") / "watcher.json"
     if tick.is_file():

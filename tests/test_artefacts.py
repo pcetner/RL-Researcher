@@ -46,6 +46,55 @@ def test_a_missing_or_reordered_section_is_a_layout_error():
     assert any("missing" in p for p in check_layout(good.replace("## Ledger\n\n", ""), "report"))
 
 
+# --------------------------------------------------------------------------- producers
+
+#: Artefact kinds the layouts declare, and C12 enforces, that nothing in the package writes yet.
+#: An entry here is a promise kept in the README, not a place to park a gap quietly.
+KNOWN_ABSENT = {"diagnosis"}
+
+
+def _producers():
+    """Every ``write_<kind>`` the artefact writers expose, keyed by the kind it writes."""
+    import importlib
+    import pkgutil
+
+    import rl_researcher.artefacts as pkg
+
+    found = set()
+    for mod in pkgutil.iter_modules(pkg.__path__):
+        m = importlib.import_module(f"{pkg.__name__}.{mod.name}")
+        found |= {n[len("write_"):] for n in dir(m)
+                  if n.startswith("write_") and callable(getattr(m, n))}
+    return found
+
+
+def test_every_artefact_the_layouts_enforce_has_something_that_writes_it():
+    """C09 enforced `canary.json` and nothing in the package produced it -- in any project,
+    ever (L021). The layouts are the other list of that shape, so the question is asked here
+    once, for all of them, rather than discovered one artefact at a time."""
+    from rl_researcher.artefacts.layouts import LAYOUTS
+
+    have = _producers()
+    missing = {k for k in LAYOUTS if k not in have} - KNOWN_ABSENT
+    assert not missing, f"the layout for {sorted(missing)} is enforced and nothing writes one"
+    built = KNOWN_ABSENT & have
+    assert not built, f"{sorted(built)} has a writer now; take it out of KNOWN_ABSENT"
+
+
+def test_an_artefact_the_package_does_not_write_is_admitted_where_a_user_reads_it():
+    """Not knowing that `canary.json` was never written is what cost the time. The README
+    already does this for the diagnosis writer; this is what makes that paragraph load-bearing
+    instead of a courtesy."""
+    from pathlib import Path
+
+    readme = (Path(__file__).resolve().parent.parent / "README.md").read_text(encoding="utf-8")
+    parts = readme.split("## What is not built yet", 1)
+    assert len(parts) == 2, "the README no longer says what is not built yet"
+    said = parts[1].split("\n## ", 1)[0]
+    for kind in sorted(KNOWN_ABSENT):
+        assert kind in said, f"the {kind} writer does not exist and the README does not say so"
+
+
 def test_an_unknown_artefact_kind_is_refused():
     with pytest.raises(LayoutError):
         layout_for("poster")

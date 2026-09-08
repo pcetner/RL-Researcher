@@ -8,7 +8,6 @@ The fixtures are built in the test rather than committed as files. A committed b
 thing someone eventually tries to run.
 """
 
-import json
 
 import pytest
 
@@ -233,16 +232,18 @@ def test_C06_staging_a_run_whose_lock_is_alive(project, monkeypatch):
     assert "C06" not in _ids(run_checks("run", spec, kind, config, out=out))
 
 
-def test_C09_a_canary_older_than_the_thing_it_was_meant_to_check(project):
+def test_C09_a_canary_that_has_never_been_recorded(project):
+    """The neighbouring cases — a recorded canary, one gone stale, one naming a commit nobody
+    has — are in `tests/test_canary.py`, because each needs a repository and, more to the point,
+    each has to go through the writer.
+
+    This test used to end by hand-writing `canary.json` itself and asserting the check went
+    quiet. It passed for the whole life of the check, while nothing wrote that file (L021).
+    """
     config, kind, spec, out = _load(project)
     config.canary.spec = "toy-canary"
     found = [f for f in run_checks("run", spec, kind, config, out=out) if f.check == "C09"]
     assert found and found[0].level == "warn" and "no canary result" in found[0].message
-
-    ledger_dir = config.path("ledger")
-    ledger_dir.mkdir(parents=True, exist_ok=True)
-    (ledger_dir / "canary.json").write_text(json.dumps({"commit": "0" * 40}), encoding="utf-8")
-    assert not [f for f in run_checks("run", spec, kind, config, out=out) if f.check == "C09"]
 
 
 def test_C07_a_number_in_a_reading_with_no_finding_behind_it(project):
