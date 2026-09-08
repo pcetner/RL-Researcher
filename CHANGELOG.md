@@ -35,6 +35,18 @@ was invisible from a checkout.
   been asked before one. `run` now refuses on a staged output directory (C06) as well.
 - **`--no-gate` and `--allow-guards` left no record**, though `reference.md` claimed the first
   was logged. Both waivers are now written to the run's own log, as `--no-check` already was.
+- **Nothing wrote `canary.json`.** C09 read it, the state page's Health section read it, and no
+  code path in the package created it — so the check could only ever say "no canary result on
+  file", in every project, and the page could only ever print "never run". `report` now records
+  it when the spec is the canary, the run completed with no units missing, and git can name the
+  commit. This is C10's defect a second time: a check that reports nothing when its input is
+  absent (L021). Two things behind it:
+  - **The canary could not recognise itself.** C09 exempted it by comparing `[canary] spec` with
+    the spec's `name`, but the setting is documented as a path, so the two never matched and the
+    canary warned about itself. All three spellings now resolve, through `resolve_spec`.
+  - **A git error was read as "nothing changed".** A canary result naming a commit the
+    repository cannot resolve silenced C09 for good. "Could not answer" is now distinct from
+    "nothing changed", and the check says so.
 
 ### Added
 
