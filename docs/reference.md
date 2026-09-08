@@ -143,15 +143,30 @@ refuses rather than guessing, and prints the options the stub offers.
 
 ### `serve [--port 7777] [--open]`
 
-One local page with the board on the left and one run on the right, from which every verb above
-is a button: edit any authored region, record the decision, write the approval, start or stop a
-run, regenerate the report, follow the log.
+The sidebar lists runs by attention needed, with search and collapsed history. Each run has
+Overview, Results, Units, and Logs views. The overview shows the registered outcome or current
+progress, relevant exceptions, and the next action. Detailed evidence loads when its view opens.
+The More menu contains report/specification links, regeneration, and Stop.
 
 The markdown on disk stays the source of truth. It is an editor over those files and never a
 second copy of them, so nothing is stranded when the server stops and every command still works
-exactly as it did. There is no research logic in it: each endpoint is a shim over the module that
-already did the job, and every refusal — an unticked box, a missing approval, a run over the gate
-line — is the same refusal, in the same words, as the command line's.
+exactly as it did. Estimation and scientific judgments use the same functions as the CLI and
+report writers. Selecting choices and clicking Record decision saves the explicit selection and
+records it in the ledger. Saving a tick alone does not mark the run decided. Report revision
+checks reject stale edits; decision retries return the existing entry rather than appending a
+duplicate. Decision entries retain both the rationale and the selected choices.
+
+The board uses `GET /api/run/<run>?light=1` for structured status, estimates, outcomes, and
+decision state. The original response without `light=1` still includes the editable article.
+`GET /api/content/<run>?view=results|units|progress` returns detailed content on demand.
+`POST /api/decide` accepts `run`, `selected` (zero-based option indices), `note`, and the report's
+`revision`; omitting `selected` preserves the original workflow of recording already-saved ticks.
+`POST /api/region` accepts an optional `revision` for optimistic conflict detection. A decision
+failure after selection is saved returns the new revision so the same intent can be retried.
+
+Draft choices and rationale survive view and run changes within the page. Closing or reloading
+warns about unsaved work. Reset draft reloads the saved report; drafts are not durable storage.
+Background status updates do not replace a focused decision form or an authored editor.
 
 Binds `127.0.0.1` only. A write is rejected when the `Origin` header says it came from anywhere
 but this page, and when `Host` is not localhost: a server on your laptop is not private, and a
@@ -534,6 +549,38 @@ matplotlib pulls it in; without it a large PNG is inlined at full size rather th
 Section orders are declared in `rl_researcher/artefacts/layouts.py`. The report is: Summary,
 Registered metrics, Units, Figures, Evidence, Provenance, Ledger, Reading, Decision (human).
 The first seven are generated; the last two are authored.
+
+## Project home and recovery information
+
+The live board updates every five seconds. `#activity` opens active work; `#run=NAME&view=results`
+opens a specific run view. Local Markdown and text documents open in a right-hand panel.
+Queue entries can include an ISO `since` timestamp for a waiting age. Missing timestamps are
+displayed as unknown; a file modification time is not treated as a hold's start time.
+
+Optional `research-ui.json` maps run names to `question`, `hypothesis`, and `finding` strings
+for concise editorial display. These are separate from the registered specification and its
+fingerprint. Without them the UI extracts a question/prediction and brief context from the
+registration. The full specification stays available in the document panel. See
+`examples/autosm64-ui.json` for an example.
+
+The decision header has one button per offered choice. A nonblank reason is required before
+recording. This requirement is enforced by the API as well as the browser.
+
+`[project]` accepts optional `goal` and `focus` strings. Home shows these declarations separately
+from observed activity. The plan link uses `[paths].plan` and is shown only for an existing file
+inside the project. Queue entries may include a concise `summary` alongside the full `why`.
+An exact run-name entry with `hold = true` blocks launches through the board, even after compute
+approval. A malformed queue also blocks board launches until corrected.
+
+An adapter can optionally implement `recovery_status(spec, unit, out)`, returning a dictionary
+with `status` (`Yes`, `No`, or `Unknown`) and a nonempty `reason`. This is a read-only inspection:
+return Yes only after checking checkpoint compatibility and required payload availability.
+Missing support or an inspection exception produces Unknown. Saved-step sidecars alone never
+produce Yes. Mixed unit outcomes are summarized with a count and per-unit evidence. The runner
+still performs its normal checks when continuation is requested.
+
+Metric help supports hover, focus, tap/click to pin, Escape to dismiss, and outside-click dismissal.
+Fonts are embedded in generated pages, so reports remain usable offline.
 
 ## Exit codes
 

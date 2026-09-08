@@ -120,11 +120,15 @@ LANES_CSS = """
     white-space:nowrap }
   .mval .sp { color:var(--muted); font-size:10.5px }
   svg.track { width:100%; height:36px; display:block }
-  .bubble { position:absolute; left:0; top:calc(100% + 7px); z-index:20; width:290px;
+  .bubble { position:absolute; left:0; top:100%; z-index:20; width:290px;
     background:var(--surface); border:1px solid var(--line); border-radius:9px;
     padding:9px 11px; box-shadow:0 8px 22px rgba(0,0,0,0.16); display:none; cursor:auto }
   .bubble.up { top:auto; bottom:calc(100% + 7px) }
   .mname:hover .bubble { display:block }
+  .metric-help { position:relative }
+  .metric-help > summary { list-style:none; cursor:pointer }
+  .metric-help > summary:focus-visible { outline:2px solid var(--accent); outline-offset:3px }
+  .metric-help[open] .bubble, .metric-help:hover .bubble, .metric-help:focus-within .bubble { display:block }
   .bubble b { display:block; font-size:12px; margin-bottom:4px }
   .bubble .bmath { display:block; margin:5px 0 7px; overflow-x:auto; overflow-y:hidden }
   .bubble .bmath .tex { display:block }
@@ -133,6 +137,12 @@ LANES_CSS = """
   .bubble .w { display:block; font-size:11.5px; line-height:1.45 }
   .bubble .y { display:block; font-size:11px; color:var(--muted); line-height:1.4;
     margin-top:6px; border-top:1px solid var(--line); padding-top:6px }
+  @media(max-width:620px) {
+    .mrow { grid-template-columns:minmax(0,1fr) auto; gap:6px; padding:8px 0 }
+    .mtrack { grid-column:1 / -1; grid-row:2 }
+    .mval { grid-column:2; grid-row:3 }
+    .bubble { width:min(260px, 70vw) }
+  }
 """
 
 
@@ -208,7 +218,8 @@ class MetricLanes(Block):
                                  label=la.title, seeds=list(la.seeds))
             rows.append(
                 f'<div class="mrow">'
-                f'<div class="mname">{esc(la.title)}{self._bubble(la)}</div>'
+                f'<details class="metric-help"><summary class="mname">{esc(la.title)}</summary>'
+                f'{self._bubble(la)}</details>'
                 f'<div class="mtarget">{esc(la.target) or "Reported"}{note}</div>'
                 f'<div class="mtrack">{track}</div>'
                 f'<div class="mval">{mean}</div>'
@@ -277,7 +288,7 @@ class LiveUnit:
     tone: str = "accent"
     step: int = 0
     max_steps: int = 1
-    rate: float = 0.0
+    rate: Optional[float] = None
     eta_seconds: Optional[float] = None
     colour: str = "#888888"
     #: (title, series so far, last value, floor) for each curve the kind declares
@@ -308,7 +319,8 @@ class LiveUnits(Block):
         # number the file states, and `10000` against `10,000` is two different numbers to a
         # reader comparing them and to the test that checks they agree.
         rows = [[f"{u.arm}/seed{u.seed}", u.state, f"{u.step:,} of {u.max_steps:,}",
-                 f"{u.rate:.1f} steps/s", duration(u.eta_seconds), "; ".join(u.notes)]
+                 f"{u.rate:.1f} steps/s" if u.rate is not None else "—",
+                 duration(u.eta_seconds), "; ".join(u.notes)]
                 for u in self.units]
         return rows_to_md(("unit", "state", "step", "rate", "time left", "note"), rows)
 
@@ -328,12 +340,13 @@ class LiveUnits(Block):
                 cols.append(f'<td class="curve">{svg}'
                             f'<span class="range">{first}<b>{shown}</b></span></td>')
             note = "<br>".join(esc(n) for n in u.notes)
+            rate = f"{u.rate:.1f}" if u.rate is not None else "—"
             rows.append(
                 f'<tr>{_identity_html(u.arm, u.seed, self.order)}{_chip_html(u.state, u.tone)}'
                 f'<td class="num">{u.step:,}<span class="of"> / {u.max_steps:,}</span>'
                 f'<div class="ltrack"><i style="width:{pct:.1f}%;background:{u.colour}"></i></div>'
                 f'</td>'
-                f'<td class="num">{float(u.rate):.1f}<span class="of"> steps/s</span></td>'
+                f'<td class="num">{rate}<span class="of"> steps/s</span></td>'
                 f'<td class="num">{duration(u.eta_seconds)}</td>'
                 f'{"".join(cols)}<td class="note">{note}</td></tr>')
         return panel(self.title,

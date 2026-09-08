@@ -10,6 +10,36 @@ a dependency.
 
 ## 0.2.0 — unreleased
 
+### Interactive workspace
+
+- Clarified automatic refresh, widened the sidebar into name/action/age columns, and added
+  relative waiting ages. Local Markdown and specifications open in an in-page document panel.
+- Added an activity page, concise editorial questions/hypotheses, formatted outcome identifiers,
+  and a sticky decision header with choice buttons and required reasons. Removed duplicate
+  preview notices and unwritten report placeholders from findings.
+
+- Added project Home with goal/focus, research holds, active work, compute gates, and recent
+  report findings. Queue holds block board launches independently of compute approval.
+- Restored complete hypotheses on Overview, visible estimate explanations, recovery evidence,
+  and metric help on hover, focus, or tap. Added neutral controls, bundled Source Sans 3,
+  and a compact mobile run menu.
+- Added a read-only Auto-SM64 snapshot preview that uses real reports without importing its
+  adapters or allowing mutations. Checkpoint sidecars no longer imply verified recovery.
+
+- Replaced the stacked log/dashboard/report pane with Overview, Results, Units, and Logs.
+  The overview uses the report's registered outcome and a compact arm comparison; per-seed
+  winners, detailed evidence, and logs are secondary. Added search, collapsed history,
+  state-specific controls, concise copy, and responsive layouts.
+- Combined explicit decision selection and recording, with document revision checks,
+  serialized submissions, and retry recovery. Decision rows now retain the selected choices.
+  Ticking a box without recording it no longer removes a run from the waiting list.
+- Added lightweight status responses and on-demand evidence. Refreshes preserve decision
+  drafts, ignore responses for previously selected views, and report lost connections.
+  Initial log reads are bounded and notable events appear before the raw log.
+- Standalone dashboards share the outcome summary, collapse technical detail, and retain
+  expanded sections across refreshes. Metric help supports keyboard and touch; report
+  disclosures expand when printing. UI assets are included in installed wheels.
+
 Corrections from a review of the package against its own stated invariants. The through-line:
 the unattended and installed paths were weaker than the interactive checkout path, and all of it
 was invisible from a checkout.

@@ -1,0 +1,34 @@
+{
+  "phase4-planner-vs-random": {
+    "question": "Can a planner using the learned world model explore more ground than a random policy?",
+    "hypothesis": "Compare the trained planner with random actions, an untrained model, and shuffled actions on the same three seeds. The planner must beat all three on coverage; matching the untrained control would mean the learned weights add no useful planning ability. Check in-loop prediction error to distinguish poor planning from unfamiliar states.",
+    "finding": "The planner covered 23 grid cells versus 325 for random actions, despite earning more of its disagreement reward."
+  },
+  "plannability": {
+    "question": "Does each candidate reward depend enough on the first action to guide a planner?",
+    "hypothesis": "Score candidate plans with four rewards across four model cells. A reward passes this screen only when rollout action-dependence exceeds its shuffled control by three paired standard errors and beats an untrained model. It must also pass the separate error-correlation screen before an engine run.",
+    "finding": "Disagreement and normalized disagreement passed the planning screen, but neither passed the separate error-correlation screen."
+  },
+  "reward-candidates": {
+    "question": "Can a replacement reward track model error and still guide a planner?",
+    "hypothesis": "Compare three replacement rewards on the same 3,000 held-out transitions and nine model cells. A replacement needs positive correlation with error relative to copy-last and must pass the planning screen. If none passes both, reopen the reward design before spending time on an engine run.",
+    "finding": "No reward candidate passed both required screens, so the next engine run remains on hold."
+  },
+  "reward-diagnostics": {
+    "question": "Why does the planner earn more reward while exploring less ground?",
+    "hypothesis": "Check whether the high-reward action is shared across models, whether ensemble members are sufficiently different, and whether a novelty reward would prefer the same trajectories. These are post-hoc diagnostics of the completed planner experiment, not changes to its registered result.",
+    "finding": "The same ground-pound action received the highest disagreement score in all nine tested models."
+  },
+  "study3-action-visible": {
+    "question": "Does an inverse-dynamics head make actions visible in the learned representation?",
+    "hypothesis": "Compare reconstruction and masked-latent models, each with and without the head, on one action-visible dataset and three seeds. Predict at least a tenfold gain in action sensitivity over each no-head control, larger than seed variation. A model below the 0.10 participation floor is not a successful representation, even if action sensitivity improves."
+  },
+  "study4-collapse-recipe": {
+    "question": "Can an anti-collapse recipe preserve both latent rank and action sensitivity?",
+    "hypothesis": "Keep the inverse-dynamics head fixed and compare EMA, variance, covariance, and combined regularization. At least one arm must clear the 0.10 participation floor and action sensitivity of 1.0. Also compare raw rank with the 12.6-dimension control to distinguish a useful improvement from full success."
+  },
+  "study5-collapse-weights": {
+    "question": "Can stronger covariance regularization recover latent rank without losing action sensitivity?",
+    "hypothesis": "Sweep covariance and variance weights separately while rerunning both controls on the same data and budget. Predict that covariance at weight 25 exceeds 12.6 effective dimensions while action sensitivity stays above 1.0; one arm must pass both. Treat rank as a lower bound because the fixed 10,000-step budget does not establish convergence."
+  }
+}

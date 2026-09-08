@@ -176,7 +176,7 @@ def test_backfill_writes_a_row_per_arm_and_metric_and_repeats_safely(project, ca
     assert len(open_ledger(config).rows) == len(first)
 
 
-def test_a_finished_run_with_an_empty_stub_is_awaiting_and_a_ticked_one_is_not(project, capsys):
+def test_a_finished_run_waits_until_the_ticked_choice_is_recorded(project, capsys):
     out = _finish_a_run(project)
     report = out / "README.md"
     report.write_text("# toy\n\n## Decision\n\n<!-- authored: decision -->\n"
@@ -190,6 +190,9 @@ def test_a_finished_run_with_an_empty_stub_is_awaiting_and_a_ticked_one_is_not(p
     report.write_text(set_region(report.read_text(encoding="utf-8"), "authored", "decision",
                                  "- [x] go\n- [ ] iterate"), encoding="utf-8")
     assert state.main([]) == 0
+    view = json.loads((project / "docs" / "state.json").read_text(encoding="utf-8"))
+    assert [w["run"] for w in view["waiting"]] == ["toy-line-fit"]
+    assert decide.main([SPEC]) == 0
     view = json.loads((project / "docs" / "state.json").read_text(encoding="utf-8"))
     assert view["waiting"] == []
 
