@@ -9,7 +9,7 @@ import pytest
 pytestmark = pytest.mark.tier1
 
 from rl_researcher import regions  # noqa: E402
-from rl_researcher.render import md_to_html, strip_regions  # noqa: E402
+from rl_researcher.render import editable_article, md_to_html, strip_regions  # noqa: E402
 
 DOC = """<!-- rl: kind=report run=r1 commit=abc -->
 # A run
@@ -112,3 +112,94 @@ def test_the_markers_never_reach_the_page():
 
 def test_the_page_carries_its_kind_so_a_layout_can_be_per_kind():
     assert 'class="doc kind-state"' in md_to_html("# S\n", kind="state", title="S")
+
+
+# --------------------------------------------------------------------------- the served page
+#
+# `editable_article` is the one renderer that keeps an authored region addressable, and it is
+# reachable only from `serve`. The pair of properties worth holding it to are that it says where
+# the region is, and that nothing it does can leak into a page written to disk.
+
+DECIDABLE = """<!-- rl: kind=report run=r1 -->
+# A run
+
+## Ledger
+
+<!-- ledger: touches=D4 -->
+2026-09-06 · r2 0.91 ✓ [F0110]
+<!-- /ledger -->
+
+## Decision (human)
+
+<!-- authored: decision -->
+- [ ] **go** — build on it
+- [x] **iterate** — what changes
+- [ ] **stop** — reopen the question
+
+Reviewer notes:
+
+_(write here)_
+<!-- /authored -->
+"""
+
+
+def test_an_authored_region_survives_as_something_the_page_can_address():
+    html = editable_article(DECIDABLE, kind="report", run="r1")
+    assert 'data-region="decision"' in html and 'data-run="r1"' in html
+    assert "<!--" not in html, "a marker reached the page"
+
+
+def test_a_ticked_box_arrives_as_a_ticked_checkbox_not_as_text():
+    """The whole point: `- [ ]` is inert text on an exported page."""
+    html = editable_article(DECIDABLE, kind="report", run="r1")
+    assert html.count('type="checkbox"') == 3
+    assert html.count(" checked>") == 1
+    assert '[x]' not in html.split("<textarea")[0]
+
+
+def test_boxes_are_numbered_in_the_order_the_options_are_read_in():
+    """The label is markup and may repeat a word; the ordinal is what addresses a box."""
+    from rl_researcher.artefacts.state import options
+
+    html = editable_article(DECIDABLE, kind="report", run="r1")
+    body = regions.body_of(DECIDABLE, "authored", "decision")
+    for i in range(len(options(body))):
+        assert f'data-option="{i}"' in html
+    assert 'data-option="3"' not in html
+
+
+def test_the_source_of_the_region_is_carried_verbatim_for_writing_back():
+    html = editable_article(DECIDABLE, kind="report", run="r1")
+    src = html.split('class="authored-src" spellcheck="true">')[1].split("</textarea>")[0]
+    assert src == regions.body_of(DECIDABLE, "authored", "decision").replace("&", "&amp;")
+
+
+def test_a_generated_or_ledger_region_is_stripped_exactly_as_it_is_on_an_exported_page():
+    html = editable_article(DECIDABLE, kind="report", run="r1")
+    assert "[F0110]" in html and "0.91" in html
+    assert html.count("<section") == 1, "only the authored region becomes a section"
+
+
+def test_the_exported_page_has_no_editable_control_in_it():
+    """`writer.write` does not know this renderer exists, and must not learn.
+
+    The three buttons an exported page does carry are the theme switch, which every page has
+    always had and which changes nothing on disk.
+    """
+    exported = md_to_html(strip_regions(DECIDABLE), kind="report", title="A run")
+    assert "<input" not in exported
+    assert "<textarea" not in exported
+    assert "authored" not in exported and "data-region" not in exported
+    assert exported.count("<button") == 3, "only the theme switch"
+
+
+def test_a_region_a_kind_wrote_itself_edits_like_any_other():
+    """A measurement's stub is the kind's own prose, with no boxes in it at all."""
+    doc = DECIDABLE.replace("- [ ] **go** — build on it\n- [x] **iterate** — what changes\n"
+                            "- [ ] **stop** — reopen the question\n\nReviewer notes:\n\n"
+                            "_(write here)_",
+                            "_(no decision is registered on a measurement.)_")
+    html = editable_article(doc, kind="measurement", run="r1")
+    assert 'data-region="decision"' in html
+    assert 'type="checkbox"' not in html
+    assert "no decision is registered" in html

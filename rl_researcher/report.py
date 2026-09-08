@@ -2,9 +2,10 @@
 
     python -m rl_researcher.report <spec> [--out DIR] [--no-ledger]
 
-Reads ``<out>/results.json`` and writes ``README.md`` and ``report.html`` beside it, together
-with a registered ledger row for every (arm, metric). Nothing is recomputed and nothing is
-re-run: the numbers come from the results the run already wrote.
+Reads ``<out>/results.json`` and writes ``README.md`` and its page beside it -- ``report.html``
+for a report, ``README.html`` for a measurement -- together with a registered ledger row for
+every (arm, metric). Nothing is recomputed and nothing is re-run: the numbers come from the
+results the run already wrote.
 
 It is safe to run repeatedly, and that is the point. A page only the process that produced it
 can produce is a page nobody can check, so every artefact here is reproducible from disk by a
@@ -21,7 +22,7 @@ from __future__ import annotations
 import json
 import sys
 
-from rl_researcher.artefacts import write_artefact_for
+from rl_researcher.artefacts import page_for, write_artefact_for
 from rl_researcher.canary import record_canary
 from rl_researcher.cli import console, load_all, spec_parser
 from rl_researcher.ledger import open_ledger
@@ -50,7 +51,7 @@ def main(argv=None) -> int:
                               command=f"python -m rl_researcher.report {spec.name}")
 
     print(f"report -> {path}")
-    print(f"page   -> {path.with_name('report.html')}")
+    print(f"page   -> {page_for(path, kind)}")
     if ledger is not None:
         written = len(ledger.rows) - before
         print(f"ledger -> {written} new finding(s); {len(ledger.rows)} on file")

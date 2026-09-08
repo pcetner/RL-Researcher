@@ -69,6 +69,10 @@ class StateView:
     running: List[Dict[str, Any]] = field(default_factory=list)
     queued: List[Dict[str, Any]] = field(default_factory=list)
     decided: List[Dict[str, Any]] = field(default_factory=list)
+    #: Registered and never started. Not on the page -- a spec nobody has run is not news, and
+    #: this page is what needs a human -- but in the JSON, because a reader of the JSON that
+    #: cannot see a spec until it has been run has no way to offer to run it.
+    ready: List[Dict[str, Any]] = field(default_factory=list)
     health: Dict[str, Any] = field(default_factory=dict)
 
     def to_json(self) -> Dict[str, Any]:
@@ -76,7 +80,7 @@ class StateView:
             "project": self.project, "generated": self.generated,
             "waiting": [w.__dict__ for w in self.waiting],
             "running": self.running, "queued": self.queued,
-            "decided": self.decided, "health": self.health,
+            "decided": self.decided, "ready": self.ready, "health": self.health,
         }
 
 
@@ -201,7 +205,12 @@ def _headline(spec: Any, summary: Dict[str, Any], limit: int = 4) -> List[str]:
 
 
 def build_state(config: Config, *, ledger: Optional[Ledger] = None) -> StateView:
-    """Read every spec, every run's status and every decision stub, and assemble the view."""
+    """Read every spec, every run's status and every decision stub, and assemble the view.
+
+    Every spec ends up in exactly one of the five lists, including the ones that have never been
+    run: their status is worked out here anyway, and dropping them meant the JSON view of the
+    project could not see a study until after somebody had started it.
+    """
     from rl_researcher.kinds import load_kind
 
     ledger = ledger or open_ledger(config)
@@ -236,6 +245,10 @@ def build_state(config: Config, *, ledger: Optional[Ledger] = None) -> StateView
                                      "artefact": _rel(config, artefact)})
         elif st.state != "not started":
             view.running.append(_running_row(config, spec, st, out))
+        else:
+            view.ready.append({"run": spec.name, "kind": kind_name,
+                               "spec": _rel(config, spec_path),
+                               "units": len(st.units)})
 
     view.queued = _queue(config)
     view.decided = _recent_decisions(ledger, view.decided)

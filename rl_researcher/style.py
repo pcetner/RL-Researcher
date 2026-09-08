@@ -114,3 +114,40 @@ BASE_CSS = f"""
     background:{tint("--accent", 12)} }}
   .chip.t-muted {{ color:var(--muted); border-color:{tint("--muted", 34)} }}
 """
+
+
+#: The authored regions of a document, when a document is being *edited* rather than exported.
+#:
+#: Only the served page carries these rules. An exported page has no authored section, no
+#: textarea and no enabled control in it at all -- it is the same bytes it has always been --
+#: so this stylesheet is the whole visible difference between reading a report and working on
+#: one, and it is deliberately quiet: a bordered block, a monospace source view behind it, and
+#: a save row that only appears once something has actually changed.
+EDIT_CSS = f"""
+  .authored {{ border:1px solid {tint("--accent", 32)}; border-radius:8px; margin:1rem 0;
+    background:{tint("--accent", 5)} }}
+  .authored-head {{ display:flex; align-items:center; gap:10px; padding:6px 12px;
+    border-bottom:1px solid {tint("--accent", 20)} }}
+  .authored-name {{ font-size:11px; text-transform:uppercase; letter-spacing:0.07em;
+    color:var(--accent); font-weight:600 }}
+  .authored-hint {{ font-size:11.5px; color:var(--muted); flex:1 }}
+  .authored-view {{ padding:.2rem 1rem }}
+  .authored-view > *:first-child {{ margin-top:.6rem }}
+  .authored-view > *:last-child {{ margin-bottom:.6rem }}
+  .authored-view li {{ list-style:none; margin-left:-1.2rem }}
+  .authored-view li:has(> input.tick) {{ margin-left:-1.2rem }}
+  input.tick {{ margin-right:.5rem; accent-color:var(--accent); cursor:pointer;
+    width:15px; height:15px; vertical-align:-2px }}
+  textarea.authored-src {{ display:none; width:100%; box-sizing:border-box; min-height:9rem;
+    font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:12.5px; line-height:1.55;
+    color:var(--ink); background:var(--code); border:0; border-top:1px solid {tint("--accent", 20)};
+    padding:.75rem 1rem; resize:vertical }}
+  textarea.authored-src:focus {{ outline:none }}
+  .authored.editing textarea.authored-src {{ display:block }}
+  .authored.editing .authored-view {{ display:none }}
+  .authored-actions {{ display:none; align-items:center; gap:8px; padding:8px 12px;
+    border-top:1px solid {tint("--accent", 20)} }}
+  .authored.editing .authored-actions, .authored.dirty .authored-actions {{ display:flex }}
+  .authored-said {{ font-size:11.5px; color:var(--muted); flex:1 }}
+  .authored-said.bad {{ color:var(--crit) }}
+"""

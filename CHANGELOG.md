@@ -47,9 +47,34 @@ was invisible from a checkout.
   - **A git error was read as "nothing changed".** A canary result naming a commit the
     repository cannot resolve silenced C09 for good. "Could not answer" is now distinct from
     "nothing changed", and the check says so.
+- **`report` printed a page path that did not exist, for every measurement.** The command
+  hardcoded `report.html` while `write_measurement` passed no `html_path` and so got
+  `README.html` from the writer's default. Which page a kind gets is now answered by
+  `artefacts.page_for`, beside the dispatch that decides which writer it gets, so the two cannot
+  disagree again.
 
 ### Added
 
+- **`python -m rl_researcher.serve`: one local page you can work from.** Edit any authored
+  region, record the decision, write the approval, start or stop a run, regenerate the report,
+  follow the log — from the board rather than from a text editor and four terminals. The
+  markdown on disk stays the source of truth; the server is a view and an editor over those
+  files and never a second copy of them, so nothing is stranded when it stops. It holds no
+  research logic: every endpoint is a shim over the module that already did the job, and every
+  refusal is the same refusal, in the same words, as the command line's. Binds 127.0.0.1, and
+  rejects a write whose `Origin` says it came from anywhere but this page.
+- `render.editable_article`, the renderer that keeps a document's authored regions addressable
+  so a page can write back to one. Only `serve` calls it: the exported page is byte for byte
+  what it always was, rather than a flag on the shared writer that could put an input into an
+  archived report.
+- `decide.record`, the whole of `decide` as a function, so a second caller records a decision by
+  running the same code rather than reading the command's stdout back. `Finding.via` says which
+  one did — for an audit, and for nothing else: the row is otherwise identical.
+- `artefacts.writer.render_page`, the page half of `write` on its own, so a document edited one
+  region at a time keeps its page in step without re-deriving every table around the paragraph.
+- `StateView.ready` in `state.json`: the specs that have never been run. Not on the state page —
+  a study nobody has started is not news — but a reader of the JSON that cannot see a spec until
+  someone has run it has no way to offer to run it.
 - `BaseKind` and `RunKind` are generic in the spec type, so a kind may declare the `RunSpec`
   subclass the documentation recommends without violating its own base. Every such kind in the
   first consuming project reported an override error per method, on a rule the docs told it to
@@ -58,6 +83,13 @@ was invisible from a checkout.
   this package computed a number. The commit already recorded is the *consuming project's*.
 - `RunContext.framework`, so a kind stamps provenance from the context rather than asking git —
   the same rule `RunContext.commit` already followed.
+
+### Removed
+
+- `render.render_artefact` and `render.write_html`. Neither had a caller anywhere in the package,
+  its scripts, its tests or its documentation; the one live markdown-to-HTML path is
+  `artefacts.writer`. Two uncalled near-copies of a renderer beside the real one are how the next
+  reader picks the wrong one.
 
 ## 0.1.0
 
