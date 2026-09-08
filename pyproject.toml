@@ -36,7 +36,7 @@ include = ["rl_researcher*"]
 # documentation about it: `install_skills`, `install_hooks`, C10 and C11 all read them at
 # runtime. Kept beside the package they were in the repository and in no wheel built from it,
 # which is invisible from a checkout and total from an install.
-rl_researcher = ["py.typed", "*.ps1", "lessons.md", "skills/*/SKILL.md", "hooks/*"]
+rl_researcher = ["py.typed", "*.ps1", "lessons.md", "skills/*/SKILL.md", "hooks/*", "ui/*.js", "ui/*.css", "ui/fonts/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

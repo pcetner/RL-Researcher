@@ -253,7 +253,7 @@ def test_the_project_bar_is_outside_the_pane_the_script_replaces(project):
     """`paintRun` writes over the whole pane; the theme switch has to survive that."""
     html = serve.page(load_config())
     shell = html.split('<div class="board">')[0]
-    assert 'id="reload"' in shell and 'id="stamp"' in shell
+    assert 'id="reload"' in shell and 'id="connection"' in shell
     assert html.count('id="pane"') == 1 and 'id="pane"' not in shell
 
 

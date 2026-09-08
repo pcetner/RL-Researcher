@@ -60,6 +60,7 @@ from rl_researcher.render import DOC_CSS, editable_article
 from rl_researcher.status import run_status
 from rl_researcher.style import BASE_CSS, EDIT_CSS, THEME_BUTTONS, THEME_SCRIPT
 from rl_researcher.units import stamp_now
+from rl_researcher.board_view import content, overview, revision
 
 DEFAULT_PORT = 7777
 
@@ -199,7 +200,17 @@ def _busy(spec: Any, out: Path) -> Optional[Dict[str, Any]]:
     return None
 
 
-def _run_view(config: Config, name: str) -> Tuple[int, Dict[str, Any]]:
+def research_hold(config: Config, name: str) -> str:
+    """Queue holds are research constraints, independent of compute approval."""
+    from rl_researcher.artefacts.state import _queue
+    for entry in _queue(config):
+        if entry.get("hold") and (entry.get("run") == name or
+                                  str(entry.get("run", "")).startswith("(queue unreadable:")):
+            return str(entry.get("why") or "This run is on hold in the project queue.")
+    return ""
+
+
+def _run_view(config: Config, name: str, *, light: bool = False) -> Tuple[int, Dict[str, Any]]:
     """One run, whole: its document as something editable, its status, and its gate."""
     kind, spec, out = _resolve(config, name)
     md = out / "README.md"
@@ -208,33 +219,37 @@ def _run_view(config: Config, name: str) -> Tuple[int, Dict[str, Any]]:
     try:
         authored = [r.arg for r in find(text) if r.kind == "authored"]
         article = editable_article(text, kind=getattr(kind, "artefact_kind", "report"),
-                                   run=spec.name, embed_images_from=md.parent) if text else ""
+                                   run=spec.name, embed_images_from=md.parent) if text and not light else ""
     except RegionError as exc:
         return 200, {"run": spec.name, "kind": spec.kind, "broken": str(exc),
                      "out": _rel(config, out), "authored": [], "article": ""}
-    st = run_status(spec, kind, out, stale_factor=float(config.watcher.stale_factor))
     gate = gate_decide(spec, kind, config, out=out)
     body = _decision_region(md)
     dash = out / "dashboard.html"
     return 200, {
         "run": spec.name,
+        "report_source": _rel(config, md) if md.is_file() else "",
         "kind": spec.kind,
         "artefact_kind": getattr(kind, "artefact_kind", "report"),
         "spec": _rel(config, spec_path) if spec_path else "",
-        "spec_text": spec_path.read_text(encoding="utf-8") if spec_path.is_file() else "",
+        "spec_text": spec_path.read_text(encoding="utf-8") if spec_path.is_file() and not light else "",
         "out": _rel(config, out),
         "article": article,
         "authored": authored,
-        "state": st.state, "done": st.done, "total": len(st.units),
         "options": options(body), "ticked": ticked(body),
         "gated": gate.gated, "approved": gate.approved,
+        "hold": research_hold(config, spec.name),
+        "wall_limit_minutes": config.gate.ungated_wall_minutes,
         "estimate": gate.cost.describe(),
+        "cost": gate.cost.to_dict(),
         "why_gated": list(gate.reasons),
         "refusal": refusal_message(gate, spec) if gate.gated and not gate.approved else "",
         "holder": lock_holder(out),
         "page": _rel(config, page_for(md, kind)) if md.is_file() else "",
         "dashboard": _rel(config, dash) if dash.is_file() else "",
         "results": (out / "results.json").is_file(),
+        "decision_body": body,
+        **overview(config, spec, kind, out, text),
     }
 
 
@@ -270,6 +285,9 @@ def _write_region(config: Config, payload: Dict[str, Any]) -> Tuple[int, Dict[st
         return 409, busy
 
     text = md.read_text(encoding="utf-8")
+    if payload.get("revision") and payload["revision"] != revision(text):
+        return 409, {"error": "This report changed. Reload it before saving your edits.",
+                     "conflict": True}
     try:
         fresh = set_region(text, "authored", arg, body.replace("\r\n", "\n").strip("\n"))
     except RegionError as exc:
@@ -287,15 +305,80 @@ def _write_region(config: Config, payload: Dict[str, Any]) -> Tuple[int, Dict[st
     render_page(md, fresh, kind=getattr(kind, "artefact_kind", "report"), title=title,
                 subtitle=_subtitle_of(page), html_path=page)
     return 200, {"ok": True, "changed": True, "region": arg,
+                 "revision": revision(fresh),
                  "ticked": ticked(_decision_region(md)),
                  "message": f"{arg} saved to {_rel(config, md)}"}
 
 
+_EDIT_LOCK = threading.RLock()
+
+
 def _decide(config: Config, payload: Dict[str, Any]) -> Tuple[int, Dict[str, Any]]:
+    with _EDIT_LOCK:
+        return _decide_locked(config, payload)
+
+
+def _decide_locked(config: Config, payload: Dict[str, Any]) -> Tuple[int, Dict[str, Any]]:
     kind, spec, out = _resolve(config, str(payload.get("run", "")))
     busy = _busy(spec, out)
     if busy:
         return 409, busy
+    if "selected" in payload:
+        from rl_researcher.ledger import open_ledger
+        from rl_researcher.units import read_json
+
+        md = out / "README.md"
+        text = md.read_text(encoding="utf-8") if md.is_file() else ""
+        body = _decision_region(md)
+        offered = options(body)
+        selected = payload["selected"]
+        if (not isinstance(selected, list) or not selected or
+                any(not isinstance(v, int) or isinstance(v, bool) or v < 0 or v >= len(offered)
+                    for v in selected) or len(set(selected)) != len(selected)):
+            return 400, {"error": "Select at least one of the offered choices."}
+        summary = read_json(out / "results.json") or {}
+        if run_status(spec, kind, out).state != "finished" or not summary:
+            return 409, {"error": "Finish the run and generate its report before recording a decision."}
+        existing = [r for r in open_ledger(config).query(kind="decision", run=spec.name)
+                    if r.fingerprint == str(summary.get("fingerprint", ""))
+                    and r.commit == str(summary.get("git_sha", ""))[:12]]
+        chose = [offered[i] for i in sorted(selected)]
+        note = str(payload.get("note") or "").strip()
+        if not note:
+            return 400, {"error": "Explain your decision before recording it.", "field": "note"}
+        if existing:
+            if (existing[-1].choices or ticked(body)) == chose and existing[-1].note == note:
+                write_state(config)
+                return 200, {"ok": True, "message": "Decision recorded.",
+                             "finding": existing[-1].id}
+            return 409, {"error": "A decision is already recorded for this result. Reload to view it."}
+        if payload.get("revision") != revision(text):
+            return 409, {"error": "This report changed. Reload before recording a decision.",
+                         "conflict": True}
+        n = -1
+
+        def choose(match: Any) -> str:
+            nonlocal n
+            n += 1
+            return match[1] + ("x" if n in selected else " ") + match[2]
+
+        fresh_body = re.sub(r"(?m)^(\s*[-*] \[)[ xX](\].*)$", choose, body or "")
+        region = next((r.arg for r in find(text) if r.kind == "authored"
+                       and r.arg.startswith("decision")), None)
+        if region is None:
+            return 409, {"error": "Regenerate this legacy report before using the decision form."}
+        code, saved = _write_region(config, {"run": spec.name, "region": region,
+                                            "body": fresh_body, "revision": payload["revision"]})
+        if code != 200:
+            return code, saved
+        try:
+            d = record(config, spec, out, note=note, via="dashboard")
+        except Exception as exc:
+            return 500, {"error": "Selection saved; decision recording needs a retry.",
+                         "details": str(exc), "revision": revision(md.read_text(encoding="utf-8"))}
+        return (200 if d.code == 0 else 409), {
+            "ok": d.code == 0, "message": "Decision recorded." if d.code == 0 else d.message,
+            "finding": d.finding, "revision": revision(md.read_text(encoding="utf-8"))}
     d = record(config, spec, out, note=str(payload.get("note") or ""), via="dashboard")
     return (200 if d.code == 0 else 409), {
         "ok": d.code == 0, "message": d.message, "chose": d.chose,
@@ -431,16 +514,22 @@ def _log(config: Config, body: Dict[str, Any], runs: Dict[str, Launch]
     appending the new lines and appending the whole file again.
     """
     kind, spec, out = _resolve(config, str(body.get("run", "")))
+    from rl_researcher.artefacts.dashboard import tail, vocab_of
+
     path = out / str(getattr(kind, "log_name", "run.log"))
+    marks = vocab_of(kind).marks
+    events = [line for line in tail(path) if any(token in line for token in marks)][-5:]
     offset = max(0, int(body.get("offset") or 0))
     restarted = False
     text, size = "", offset
     if path.is_file():
+        if body.get("tail") and offset == 0:
+            offset = max(0, path.stat().st_size - 65536)
         if offset > path.stat().st_size:      # the run started over and the log was replaced
             offset, restarted, size = 0, True, 0
         with path.open("rb") as fh:
             fh.seek(offset)
-            chunk = fh.read()
+            chunk = fh.read(65536)
         text, size = chunk.decode("utf-8", "replace"), offset + len(chunk)
     launch = runs.get(spec.name)
     over = None if launch is None else launch.exit
@@ -448,7 +537,7 @@ def _log(config: Config, body: Dict[str, Any], runs: Dict[str, Launch]
     # Two different questions, and the panel needs both: `running` is "a run this server started
     # is still alive", `live` is "something owns this directory" -- which is also true of a run
     # started in a terminal, and that is a run worth following too.
-    return 200, {"text": text, "offset": size, "restarted": restarted,
+    return 200, {"text": text, "offset": size, "restarted": restarted, "events": events,
                  "running": launch is not None and over is None,
                  "live": bool(held and held.get("alive")), "exit": over,
                  "said": list(launch.said) if launch is not None and over is not None else []}
@@ -475,17 +564,36 @@ def api(config: Config, method: str, path: str, payload: Optional[Dict[str, Any]
 
     try:
         if method == "GET":
+            if verb == "document":
+                from rl_researcher.presentation import document
+                return document(config.root, str(body.get("path", "")))
             if verb == "state":
-                return 200, build_state(config).to_json()
+                return 200, build_state(config, history_limit=None).to_json()
             if verb == "run":
-                return _run_view(config, str(body.get("run", "")))
+                name = str(body.get("run", ""))
+                code, data = _run_view(config, name, light=body.get("light") == "1")
+                launch = runs.get(name)
+                if launch is not None:
+                    data["starting"] = launch.exit is None and not bool(data.get("holder"))
+                    if launch.exit:
+                        data.setdefault("alerts", []).append({"unit": "Launch failed",
+                            "message": "\n".join(list(launch.said)[-4:]) or f"Exit {launch.exit}"})
+                return code, data
+            if verb == "content":
+                kind, spec, out = _resolve(config, str(body.get("run", "")))
+                view = str(body.get("view", "results"))
+                if view not in ("results", "units", "progress"):
+                    return 400, {"error": "Unknown view."}
+                return 200, content(spec, kind, out, view,
+                                    stale_factor=float(config.watcher.stale_factor))
             if verb == "log":
                 return _log(config, body, runs)
         elif method == "POST":
             if verb == "state":
                 return 200, {"ok": True, "state": _rel(config, write_state(config))}
             if verb == "region":
-                return _write_region(config, body)
+                with _EDIT_LOCK:
+                    return _write_region(config, body)
             if verb == "decide":
                 return _decide(config, body)
             if verb == "approve":
@@ -493,6 +601,9 @@ def api(config: Config, method: str, path: str, payload: Optional[Dict[str, Any]
             if verb == "report":
                 return _report(config, body)
             if verb == "run":
+                hold = research_hold(config, str(body.get("run", "")))
+                if hold:
+                    return 409, {"error": "Research hold: " + hold}
                 return _launch(config, body, runs)
             if verb == "stop":
                 return _stop(config, body)
@@ -508,437 +619,8 @@ def api(config: Config, method: str, path: str, payload: Optional[Dict[str, Any]
 #: The board's own layout. Everything else the page wears -- the colour tokens, the type, the
 #: chips, the theme switch, the document rules and the authored-region rules -- comes from
 #: `style` and `render`, so this page and every exported page are the same page in two moods.
-BOARD_CSS = """
-  html { height:100% }
-  body { height:100vh; overflow:hidden; display:flex; flex-direction:column }
-  .board { flex:1; display:flex; min-height:0 }
-  .rail { width:22rem; min-width:16rem; flex:0 0 auto; border-right:1px solid var(--line);
-    overflow-y:auto; background:var(--panel, var(--ground)) }
-  .pane { flex:1; overflow-y:auto; position:relative }
-  .bar { display:flex; align-items:center; gap:10px; flex-wrap:wrap; padding:10px 16px;
-    border-bottom:1px solid var(--line); position:sticky; top:0; z-index:5;
-    background:var(--ground) }
-  .bar .spacer { flex:1 }
-  /* The buttons stay together when the bar wraps: a "stop" that has drifted onto its own line
-     away from "run" is a button whose meaning you have to work out from its label alone. */
-  .bar .acts { display:inline-flex; gap:8px; flex-wrap:nowrap }
-  .brand { font-weight:700; letter-spacing:-0.01em }
-  .stamp { font-size:11.5px; color:var(--muted) }
-  button.act { font:inherit; font-size:12.5px; padding:5px 11px; border-radius:7px;
-    border:1px solid var(--line); background:var(--code); color:var(--ink); cursor:pointer }
-  button.act:hover { border-color:var(--accent); color:var(--accent) }
-  button.act[disabled] { opacity:.45; cursor:default; border-color:var(--line);
-    color:var(--muted) }
-  button.act.go { border-color:var(--accent); color:var(--accent); font-weight:600 }
-  button.act.warn { border-color:var(--crit); color:var(--crit) }
-  .group { border-bottom:1px solid var(--line) }
-  .group > h2 { position:sticky; top:0; background:var(--ground); z-index:2 }
-  .item { display:block; width:100%; text-align:left; font:inherit; cursor:pointer;
-    background:none; border:0; border-bottom:1px solid var(--line); padding:9px 14px;
-    color:var(--ink) }
-  .item:hover { background:var(--code) }
-  .item[aria-current="true"] { background:var(--code); box-shadow:inset 3px 0 0 var(--accent) }
-  .item .name { font-weight:600; font-size:13px }
-  /* Three lines of why, then an ellipsis. The rail is a list of things waiting on you and has
-     to stay scannable; the whole of it is on the right the moment you click. */
-  .item .why { color:var(--muted); font-size:11.5px; margin-top:2px; line-height:1.45;
-    display:-webkit-box; -webkit-line-clamp:3; -webkit-box-orient:vertical; overflow:hidden }
-  .item .why b { color:var(--ink); font-weight:600 }
-  .kv { padding:8px 14px; font-size:11.5px; color:var(--muted); line-height:1.7 }
-  .kv b { color:var(--ink); font-weight:600 }
-  .panel { display:none; padding:12px 16px; border-bottom:1px solid var(--line);
-    background:var(--code) }
-  .panel.open { display:block }
-  .panel label { display:block; font-size:11.5px; color:var(--muted); margin-bottom:5px;
-    white-space:pre-wrap }
-  .panel textarea, .panel input[type="text"] { width:100%; box-sizing:border-box; font:inherit;
-    font-size:13px; color:var(--ink); background:var(--ground); border:1px solid var(--line);
-    border-radius:7px; padding:8px 10px; resize:vertical }
-  .panel textarea { min-height:4.5rem }
-  .panel .row { display:flex; gap:8px; align-items:center; margin-top:9px; flex-wrap:wrap }
-  .said { font-size:12px; white-space:pre-wrap; margin:0; padding:10px 16px;
-    border-bottom:1px solid var(--line); color:var(--muted) }
-  .said.bad { color:var(--crit) }
-  .said.good { color:var(--ok) }
-  .said:empty { display:none }
-  pre.log:empty { display:none }
-  pre.log { margin:0; padding:12px 16px; max-height:22rem; overflow:auto; font-size:12px;
-    line-height:1.5; white-space:pre-wrap; background:var(--code);
-    border-bottom:1px solid var(--line) }
-  iframe.live { display:block; width:100%; height:38rem; border:0;
-    border-bottom:1px solid var(--line); background:var(--ground) }
-  .empty { padding:3rem 1.5rem; color:var(--muted); max-width:34rem }
-  .doc { max-width:58rem }
-"""
-
-#: One program, at the end of the body. It does four things: keeps the rail in step with
-#: `state.json`, swaps the right pane between runs, keeps a ticked checkbox and the region source
-#: it belongs to saying the same thing, and posts. It deliberately never decides anything: every
-#: refusal a button can hit is worded on the server, once, and printed here as it arrives.
-BOARD_SCRIPT = r"""
-(function () {
-  var pane = document.getElementById('pane'), rail = document.getElementById('rail');
-  var stamp = document.getElementById('stamp');
-  var current = null, logAt = 0, logTimer = null;
-  // What the server last said about this run. Held here rather than only in the element, because
-  // the pane is repainted whole and a message wiped by the repaint that followed it is a message
-  // nobody read -- which was true of every refusal the buttons could produce.
-  var said = {text: '', tone: ''};
-
-  function el(tag, cls, text) {
-    var n = document.createElement(tag);
-    if (cls) n.className = cls;
-    if (text != null) n.textContent = text;
-    return n;
-  }
-  function say(what, tone) {
-    said = {text: what || '', tone: tone || ''};
-    showSaid();
-  }
-  function showSaid() {
-    var box = document.getElementById('said');
-    if (!box) return;
-    box.textContent = said.text;
-    box.className = 'said' + (said.tone ? ' ' + said.tone : '');
-  }
-  function ask(method, url, body) {
-    return fetch(url, {
-      method: method, credentials: 'same-origin',
-      headers: body ? {'Content-Type': 'application/json'} : {},
-      body: body ? JSON.stringify(body) : null
-    }).then(function (r) {
-      return r.json().then(function (j) { return {ok: r.ok, data: j}; });
-    });
-  }
-  function dirty() { return !!pane.querySelector('.authored.dirty, .authored.editing'); }
-
-  // ---------------------------------------------------------------- the rail
-
-  function line(name, why, why2) {
-    var b = el('button', 'item');
-    b.type = 'button';
-    b.dataset.run = name;
-    b.appendChild(el('div', 'name', name));
-    if (why) { var d = el('div', 'why'); d.innerHTML = why; b.appendChild(d); }
-    if (why2) b.appendChild(el('div', 'why', why2));
-    b.addEventListener('click', function () { open(name); });
-    return b;
-  }
-  function group(title, nodes) {
-    var g = el('div', 'group');
-    g.appendChild(el('h2', null, title));
-    if (!nodes.length) { g.appendChild(el('div', 'kv', 'nothing')); return g; }
-    nodes.forEach(function (n) { g.appendChild(n); });
-    return g;
-  }
-  function esc(s) {
-    return String(s == null ? '' : s).replace(/[&<>]/g, function (c) {
-      return {'&': '&amp;', '<': '&lt;', '>': '&gt;'}[c];
-    });
-  }
-  // An option is a line of markdown -- `**go** — build on it` -- because the file it lives in is
-  // markdown. The rail is not markdown, so the emphasis marks come off for display only: what
-  // gets written back, and what the ledger records, is the line exactly as it is on disk.
-  function plain(s) { return String(s == null ? '' : s).replace(/\*\*/g, ''); }
-  function paintRail(s) {
-    var keep = document.activeElement, at = rail.scrollTop;
-    rail.textContent = '';
-    rail.appendChild(group('Awaiting you', (s.waiting || []).map(function (w) {
-      return line(w.run, '<b>' + esc(w.outcome || 'finished') + '</b>',
-                  plain((w.options || []).join(' · ')));
-    })));
-    rail.appendChild(group('Running', (s.running || []).map(function (r) {
-      var trouble = (r.failed || []).length ? 'FAILED: ' + r.failed.join(', ')
-                  : (r.stale || []).length ? 'stale: ' + r.stale.join(', ') : '';
-      return line(r.run, esc(r.done + '/' + r.total + ' units · beat ' + r.heartbeat_age +
-                             ' ago · eta ' + r.eta), trouble);
-    })));
-    rail.appendChild(group('Queued', (s.queued || []).map(function (q) {
-      return line(q.run || '?', esc((q.estimate || '') + (q.hold ? ' · on hold' : '')));
-    })));
-    // A registered spec nobody has run yet. It is not news, so the state page does not print it
-    // -- but leaving it off the board would mean the one thing you cannot do from here is start
-    // a study, and the point of the board is that there is nowhere else you have to go.
-    rail.appendChild(group('Registered, not started', (s.ready || []).map(function (q) {
-      return line(q.run, esc(q.kind + ' · ' + q.units + ' unit(s)'));
-    })));
-    rail.appendChild(group('Recently decided', (s.decided || []).map(function (d) {
-      return line(d.run, esc(plain((d.chose || []).join(', ')) || 'decided') +
-                         (d.id ? ' <b>[' + esc(d.id) + ']</b>' : ''));
-    })));
-    var h = s.health || {}, kv = el('div', 'kv');
-    kv.innerHTML = '<b>' + esc(h.findings) + '</b> findings · <b>' +
-      esc((h.throughput_devices || []).join(', ') || 'no devices') + '</b><br>watcher ' +
-      esc(h.watcher_last_tick || 'never') + '<br>canary ' +
-      esc((h.canary || {}).commit || 'never run') + '<br>approvals ' +
-      esc((h.approvals || []).join(', ') || 'none');
-    var g = el('div', 'group');
-    g.appendChild(el('h2', null, 'Health'));
-    g.appendChild(kv);
-    (h.unreadable_specs || []).forEach(function (bad) {
-      var n = el('div', 'kv');
-      n.appendChild(el('span', 'chip t-crit', 'spec'));
-      n.appendChild(document.createTextNode(' ' + bad));
-      g.appendChild(n);
-    });
-    rail.appendChild(g);
-    if (stamp) stamp.textContent = 'generated ' + (s.generated || '');
-    mark();
-    rail.scrollTop = at;
-    if (keep && keep.dataset && keep.dataset.run) {
-      var again = rail.querySelector('[data-run="' + keep.dataset.run + '"]');
-      if (again) again.focus();
-    }
-  }
-  function mark() {
-    Array.prototype.forEach.call(rail.querySelectorAll('.item'), function (b) {
-      b.setAttribute('aria-current', b.dataset.run === current ? 'true' : 'false');
-    });
-  }
-  function board() {
-    return ask('GET', '/api/state').then(function (r) { paintRail(r.data); });
-  }
-
-  // ---------------------------------------------------------------- one run
-
-  function open(name) {
-    if (name !== current && dirty() &&
-        !window.confirm('There are unsaved edits on this run. Leave them?')) return;
-    if (name !== current) said = {text: '', tone: ''};
-    current = name;
-    mark();
-    return refresh();
-  }
-  function refresh() {
-    if (!current) return Promise.resolve();
-    return ask('GET', '/api/run/' + encodeURIComponent(current)).then(function (r) {
-      paintRun(r.data);
-    });
-  }
-  function chip(text, tone) { return '<span class="chip t-' + tone + '">' + esc(text) + '</span>'; }
-
-  function paintRun(d) {
-    logAt = 0;
-    stopFollowing();
-    if (d.error || d.broken) {
-      pane.innerHTML = '<div class="empty"><h1>' + esc(d.run || current) + '</h1><p>' +
-        esc(d.error || d.broken) + '</p></div>';
-      return;
-    }
-    var running = d.state === 'running' || (d.holder && d.holder.alive);
-    var tone = d.state === 'finished' ? 'ok' : running ? 'accent' : 'muted';
-    var bits = [chip(d.state, tone), chip(d.done + '/' + d.total + ' units', 'muted')];
-    if (d.gated) bits.push(chip(d.approved ? 'approved' : 'needs approval',
-                                d.approved ? 'ok' : 'crit'));
-    // The estimate is what the gate is about, so it belongs in the bar while there is still
-    // something to spend. On a finished run it reads "nothing to run", which is noise beside a
-    // result, and the point of this bar is that the one thing waiting on you is easy to see.
-    if (d.gated || !d.results) bits.push('<span class="stamp">' + esc(d.estimate) + '</span>');
-
-    var links = [];
-    if (d.page) links.push('<a href="/' + d.page + '" target="_blank">page</a>');
-    if (d.spec) links.push('<a href="/' + d.spec + '" target="_blank">spec</a>');
-    if (d.dashboard) links.push('<a href="/' + d.dashboard + '" target="_blank">live</a>');
-
-    pane.innerHTML =
-      '<div class="bar"><span class="brand">' + esc(d.run) + '</span>' + bits.join(' ') +
-        '<span class="stamp">' + links.join(' · ') + '</span>' +
-        '<span class="spacer"></span>' +
-        '<span class="acts">' +
-          '<button class="act" data-open="decide">decide</button>' +
-          (d.gated && !d.approved ? '<button class="act go" data-open="approve">approve</button>'
-                                  : '') +
-          (running ? '<button class="act warn" data-do="stop">stop</button>'
-                   : '<button class="act" data-do="run">run</button>') +
-          '<button class="act" data-do="report">regenerate</button>' +
-        '</span>' +
-      '</div>' +
-      '<p class="said" id="said"></p>' +
-      '<div class="panel" id="p-decide">' +
-        '<label>Why. This is the note the ledger keeps, and the only thing that explains the ' +
-        'tick when it is read back in six weeks.</label>' +
-        '<textarea id="note" placeholder="what the numbers made you do"></textarea>' +
-        '<div class="row"><button class="act go" data-do="decide">record the decision</button>' +
-        '<span class="stamp" id="ticked"></span></div>' +
-      '</div>' +
-      (d.gated && !d.approved ?
-      '<div class="panel" id="p-approve">' +
-        '<label>' + esc(d.refusal) + '</label>' +
-        '<label>The sentence in which you approved it, in your words.</label>' +
-        '<textarea id="quote" placeholder="yes, run it — worth an hour to settle the ' +
-        'comparison"></textarea>' +
-        '<div class="row"><button class="act go" data-do="approve">write the approval</button>' +
-        '</div>' +
-      '</div>' : '') +
-      '<pre class="log" id="log"></pre>' +
-      (running && d.dashboard ? '<iframe class="live" src="/' + d.dashboard + '"></iframe>' : '') +
-      (d.article || '<div class="empty"><p>No document yet. This run has not been reported.</p>' +
-                    '</div>');
-
-    setTicked(d.ticked);
-    showSaid();
-    wire(d);
-    // The log is read once whether or not anything is live -- the tail of the last run is the
-    // first thing you want when a run is not running and you are asking why -- and then followed
-    // only while something is actually writing to it.
-    pollLog();
-    if (running) follow();
-  }
-  function follow() {
-    if (!logTimer) logTimer = setInterval(pollLog, 1500);
-  }
-  function setTicked(list) {
-    var box = document.getElementById('ticked');
-    if (box) box.textContent = (list && list.length)
-      ? 'ticked: ' + plain(list.join(', ')) : 'nothing is ticked yet';
-  }
-
-  // ---------------------------------------------------------------- the regions
-
-  // A box and the source it came from must never disagree, so the box edits the source and the
-  // source is the only thing sent. The nth box is the nth `- [ ]` line, which is the order the
-  // server reads them in too.
-  var BOX = /^(\s*[-*] \[)([ xX])(\].*)$/;
-  function setBox(area, index, on) {
-    var lines = area.value.split('\n'), n = 0;
-    for (var i = 0; i < lines.length; i++) {
-      var m = lines[i].match(BOX);
-      if (!m) continue;
-      if (n === index) { lines[i] = m[1] + (on ? 'x' : ' ') + m[3]; break; }
-      n++;
-    }
-    area.value = lines.join('\n');
-  }
-  function wire(d) {
-    Array.prototype.forEach.call(pane.querySelectorAll('.authored'), function (sec) {
-      var area = sec.querySelector('.authored-src');
-      var note = sec.querySelector('.authored-said');
-      var was = area.value;
-      function touched() { sec.classList.add('dirty'); note.textContent = 'unsaved'; }
-      Array.prototype.forEach.call(sec.querySelectorAll('input.tick'), function (box) {
-        box.addEventListener('change', function () {
-          setBox(area, parseInt(box.dataset.option, 10), box.checked);
-          touched();
-        });
-      });
-      area.addEventListener('input', touched);
-      sec.querySelector('.authored-edit').addEventListener('click', function () {
-        sec.classList.toggle('editing');
-        if (sec.classList.contains('editing')) area.focus();
-      });
-      sec.querySelector('.authored-revert').addEventListener('click', function () {
-        area.value = was;
-        sec.classList.remove('dirty', 'editing');
-        note.textContent = '';
-        refresh();
-      });
-      sec.querySelector('.authored-save').addEventListener('click', function () {
-        note.textContent = 'saving…';
-        ask('POST', '/api/region', {run: d.run, region: sec.dataset.region, body: area.value})
-          .then(function (r) {
-            if (!r.ok) { note.textContent = r.data.error; note.classList.add('bad'); return; }
-            was = area.value;
-            sec.classList.remove('dirty', 'editing');
-            note.classList.remove('bad');
-            note.textContent = '';
-            setTicked(r.data.ticked);
-            say(r.data.message, 'good');
-            board();
-            if (!dirty()) refresh();
-          });
-      });
-    });
-    Array.prototype.forEach.call(pane.querySelectorAll('[data-open]'), function (b) {
-      b.addEventListener('click', function () {
-        var p = document.getElementById('p-' + b.dataset.open);
-        p.classList.toggle('open');
-        var field = p.querySelector('textarea');
-        if (p.classList.contains('open') && field) field.focus();
-      });
-    });
-    Array.prototype.forEach.call(pane.querySelectorAll('[data-do]'), function (b) {
-      b.addEventListener('click', function () { act(b, d); });
-    });
-  }
-
-  // ---------------------------------------------------------------- the buttons
-
-  function act(button, d) {
-    var what = button.dataset.do, body = {run: d.run};
-    if (what === 'decide') body.note = (document.getElementById('note') || {}).value || '';
-    if (what === 'approve') body.quote = (document.getElementById('quote') || {}).value || '';
-    if (what === 'run' && d.gated && !d.approved &&
-        !window.confirm('This run is over the gate line and has no approval. It will refuse. ' +
-                        'Send it anyway?')) return;
-    button.disabled = true;
-    say('working…');
-    ask('POST', '/api/' + what, body).then(function (r) {
-      button.disabled = false;
-      if (!r.ok && r.data.needs === 'kill') {
-        if (!window.confirm(r.data.error)) { say(r.data.error); return; }
-        body.kill = true;
-        return ask('POST', '/api/stop', body).then(function (again) {
-          say(again.data.message || again.data.error, again.ok ? 'good' : 'bad');
-          board();
-          refresh();
-        });
-      }
-      say(r.data.message || r.data.error, r.ok ? 'good' : 'bad');
-      board();
-      if (!r.ok || dirty()) return;
-      // A launch returns the moment the process exists, which is before it has taken the lock
-      // or written a line -- and a toy run can be over before the next repaint. So the log is
-      // followed from here rather than from whatever the repaint happened to see.
-      var launched = r.ok && what === 'run';
-      return refresh().then(function () { if (launched) { pollLog(); follow(); } });
-    });
-  }
-
-  // ---------------------------------------------------------------- the log
-
-  function pollLog() {
-    var box = document.getElementById('log');
-    if (!box || !current) { stopFollowing(); return; }
-    ask('GET', '/api/log/' + encodeURIComponent(current) + '?offset=' + logAt)
-      .then(function (r) {
-        if (!r.ok) return;
-        if (r.data.restarted) box.textContent = '';
-        logAt = r.data.offset;
-        if (r.data.text) {
-          var atEnd = box.scrollTop + box.clientHeight >= box.scrollHeight - 8;
-          box.textContent += r.data.text;
-          if (atEnd) box.scrollTop = box.scrollHeight;
-        }
-        // Only on a non-zero exit. A run that never started wrote nothing to the log -- refused
-        // at the gate, locked, a check that came back an error -- and said why on the way out,
-        // which is the one thing the log cannot tell you. A run that succeeded put all of it in
-        // the log already, and appending its stdout as well would print every line twice.
-        if (r.data.exit && r.data.said.length && !box.dataset.said) {
-          box.dataset.said = '1';
-          box.textContent += (box.textContent ? '\n' : '') + r.data.said.join('\n') + '\n';
-          box.scrollTop = box.scrollHeight;
-        }
-        if (logTimer && !r.data.running && !r.data.live) { stopFollowing(); refresh(); }
-      });
-  }
-  function stopFollowing() {
-    if (logTimer) { clearInterval(logTimer); logTimer = null; }
-  }
-
-  // ---------------------------------------------------------------- go
-
-  document.getElementById('reload').addEventListener('click', function () {
-    ask('POST', '/api/state').then(board);
-  });
-  board().then(function () {
-    var first = rail.querySelector('.item');
-    if (first) open(first.dataset.run);
-  });
-  // The board, not the document: a page that reloaded itself would throw away what you were
-  // typing, which is the one thing the static index does that this cannot.
-  setInterval(board, 5000);
-})();
-"""
+BOARD_CSS = (Path(__file__).parent / "ui" / "board.css").read_text(encoding="utf-8")
+BOARD_SCRIPT = (Path(__file__).parent / "ui" / "board.js").read_text(encoding="utf-8")
 
 
 def page(config: Config) -> str:
@@ -958,15 +640,15 @@ def page(config: Config) -> str:
         "</head><body>\n"
         # The project's own bar sits above the board and outside the pane: the pane is
         # replaced whole each time a run is opened, and the theme switch must survive that.
-        f'<div class="bar"><span class="brand">{name}</span>'
-        '<span class="stamp" id="stamp"></span><span class="spacer"></span>'
-        '<button class="act" id="reload">rebuild the state page</button>'
+        f'<div class="bar"><a class="brand" id="brand-home" href="#home">{name}</a>'
+        '<span class="stamp" id="connection" role="status">Connecting…</span><span class="spacer"></span>'
+        '<button class="act" id="reload">Refresh</button>'
         f"{THEME_BUTTONS}</div>\n"
         '<div class="board">\n'
-        '<div class="rail" id="rail"></div>\n'
-        '<div class="pane" id="pane">\n'
-        '<div class="empty"><p>Pick a run on the left.</p></div>\n'
-        "</div>\n</div>\n"
+        '<aside class="rail" id="rail" aria-label="Runs"></aside>\n'
+        '<main class="pane" id="pane">\n'
+        '<div class="empty"><p>Loading project home…</p></div>\n'
+        "</main>\n</div>\n"
         f"<script>{THEME_SCRIPT}\n{BOARD_SCRIPT}</script>\n"
         "</body></html>\n"
     )
@@ -989,9 +671,8 @@ class Board(ThreadingHTTPServer):
 class Handler(BaseHTTPRequestHandler):
     """JSON under ``/api``, the page at ``/``, and the project's own files under everything else.
 
-    The files matter: the run's live ``dashboard.html`` is shown in a frame rather than rebuilt,
-    because it is already a complete self-refreshing page with the charts and the unit tables in
-    it, and a second copy of that would be a second thing to keep in step.
+    Exported reports and standalone dashboards stay available as files. The workspace
+    requests shared blocks without embedding another page shell.
     """
 
     server_version = "rl-researcher"

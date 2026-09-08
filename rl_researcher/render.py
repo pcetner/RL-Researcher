@@ -54,6 +54,10 @@ DOC_CSS = """
 .doc hr { border: 0; border-top: 1px solid var(--line); margin: 2rem 0; }
 /* A table wide enough to need it scrolls inside itself; the page never scrolls sideways. */
 .doc .table-wrap { overflow-x: auto; }
+.doc details { border:1px solid var(--line); border-radius:7px; margin:1rem 0; padding:12px; }
+.doc summary { cursor:pointer; font-weight:600; }
+.doc summary:focus-visible { outline:2px solid var(--accent); }
+@media print { .page-head .theme { display:none } .doc { max-width:none } }
 """
 
 
@@ -143,6 +147,15 @@ def md_to_html(markdown: str, *, kind: str, title: str, embed_images_from: Optio
     rule can exist without a per-kind stylesheet.
     """
     body = _renderer(embed_images_from).render(markdown)
+    if kind in ("report", "measurement", "diagnosis"):
+        sections = re.split(r"(?=<h2>)", body)
+        for i, part in enumerate(sections):
+            match = re.match(r"<h2>(Units|Provenance|Ledger|Evidence|Method)</h2>\n?", part)
+            if match:
+                label = match.group(1)
+                sections[i] = (f'<details data-disclosure="{label}"><summary>{label}</summary>'
+                               + part + '</details>')
+        body = "".join(sections)
     head = html_mod.escape(title)
     sub = f'<p class="sub">{html_mod.escape(subtitle)}</p>' if subtitle else ""
     return (
@@ -212,11 +225,10 @@ def _authored_section(md: Any, region: Region, run: str) -> str:
         f' data-run="{html_mod.escape(run, quote=True)}">\n'
         f'<div class="authored-head"><span class="authored-name">'
         f'{html_mod.escape(region.arg)}</span>'
-        f'<span class="authored-hint">yours to write; kept word for word when the run is '
-        f'regenerated</span>'
+        f'<span class="authored-hint">Saved with the report</span>'
         f'<button type="button" class="authored-edit">edit</button></div>\n'
         f'<div class="authored-view">\n{_checkboxes(md.render(body))}</div>\n'
-        f'<textarea class="authored-src" spellcheck="true">'
+        f'<textarea class="authored-src" spellcheck="true" aria-label="Edit {html_mod.escape(region.arg, quote=True)}">'
         f'{html_mod.escape(body)}</textarea>\n'
         f'<div class="authored-actions"><button type="button" class="authored-save">save</button>'
         f'<button type="button" class="authored-revert">revert</button>'

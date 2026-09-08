@@ -75,6 +75,31 @@ continues from the last checkpoint; units that already have a result are skipped
 
 ## What the package provides
 
+### Interactive workspace
+
+From a consuming project, run:
+
+```sh
+python -m rl_researcher.serve --open
+```
+
+The workspace opens on **Overview**: the run's status, registered outcome or progress,
+important exceptions, and its next action. **Results** contains the full metric comparisons,
+figures, and editable interpretation; **Units** shows individual seeds; **Logs** shows recent
+events and an expandable raw log. Search the sidebar to find runs, including collapsed history.
+
+For a finished run, select the report's decision choices, enter a reason, and click
+**Record decision**. The selection is saved to the report and the decision is recorded in the
+ledger. A saved selection alone remains under **Needs attention**. Drafts survive switching
+views and runs within the page; closing or reloading warns about unsaved work. **Reset draft**
+reloads the saved choices. If the report changes externally, reload the draft before recording.
+
+Approval and starting remain separate actions. **More** contains the full report,
+specification, standalone dashboard, report regeneration, and Stop when a run is active.
+Exported pages remain self-contained; technical details expand for printing.
+
+### Research records
+
 **A registration with an identity.** A spec is a TOML file naming the hypothesis, the seeds, the
 metrics with their bars, the budget, and the heartbeat and checkpoint cadence. `spec_fingerprint`
 hashes the registered part, ignoring fields left at their defaults. A bar edited after a result
@@ -176,6 +201,22 @@ Full argument lists are in [docs/reference.md](docs/reference.md#commands).
 
 ## Development
 
+The interactive board opens on **Home**, with project context, attention items, active work,
+queue holds, and recent findings. Add `goal` and `focus` under `[project]` in
+`rl-researcher.toml`; the existing `[paths].plan` supplies the project-plan link.
+Run views keep the complete hypothesis on Overview and metric definitions available on
+hover, keyboard focus, or tap. Compute approval does not release a research hold.
+
+For a read-only review of copied Auto-SM64 research artifacts:
+
+```sh
+python -m rl_researcher.preview /path/to/autosm64-reference --port 7784
+```
+
+This historical preview requires the snapshot manifest, specs, queue, and reports. It never
+imports the project's adapters, and rejects every write or launch request. It is a development
+reference, not a live connection to Auto-SM64.
+
 ```sh
 pip install -e ".[dev]"
 ruff check rl_researcher tests && mypy rl_researcher && pytest -q
@@ -187,3 +228,6 @@ data.
 ## Licence
 
 MIT.
+
+Bundled Source Sans 3 fonts are by Adobe and licensed under the SIL Open Font License;
+see `rl_researcher/ui/fonts/LICENSE.md`.
