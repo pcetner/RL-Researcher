@@ -320,27 +320,32 @@ def c01_instrument_exists(ctx: Context) -> Iterable[Finding]:
 def c09_canary_is_fresh(ctx: Context) -> Iterable[Finding]:
     """A gated run is one worth hours. The canary is what says the machinery still works, and a
     canary from before the last change to the machinery says nothing about it."""
-    import json
+    from rl_researcher.canary import changed_since, is_canary, read_canary
 
     if ctx.config is None or ctx.spec is None:
         return []
     watched = list(getattr(getattr(ctx.config, "canary", None), "watched", []) or [])
     canary_name = getattr(getattr(ctx.config, "canary", None), "spec", None)
-    if not canary_name or ctx.spec.name == canary_name:
+    # By path or by name: `[canary] spec` is documented as a path and a spec's name is a bare
+    # word, so comparing the two exempted nothing and the canary warned about itself.
+    if not canary_name or is_canary(ctx.spec, ctx.config):
         return []
-    path = ctx.path("ledger")
-    blob: Dict[str, Any] = {}
-    if path is not None and (path / "canary.json").is_file():
-        try:
-            blob = json.loads((path / "canary.json").read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            blob = {}
+    blob = read_canary(ctx.config)
     if not blob.get("commit"):
         return [_warn("C09", f"no canary result on file; `{canary_name}` is what says the "
-                             f"machinery still works before an expensive run")]
-    stale = _changed_since(ctx, str(blob["commit"]), watched)
+                             f"machinery still works before an expensive run. Run it, then "
+                             f"`report` it — that is what records the result")]
+    commit = str(blob["commit"])
+    root = Path(ctx.root) if ctx.root else Path(getattr(ctx.config, "root", "."))
+    stale = changed_since(root, commit, watched)
+    if stale is None:
+        # Not the same answer as "nothing changed". Read as one, a canary result naming a commit
+        # this repository has never heard of silences the check for good.
+        return [_warn("C09", f"the canary result names commit {commit[:12]}, which this "
+                             f"repository cannot resolve, so nothing can be said about whether "
+                             f"it is stale. Re-run the canary")]
     if stale:
-        return [_warn("C09", f"the canary last passed at {str(blob['commit'])[:12]}, and "
+        return [_warn("C09", f"the canary last passed at {commit[:12]}, and "
                              f"{', '.join(stale)} changed after it")]
     return []
 
@@ -554,24 +559,6 @@ def _skill_files(ctx: Context) -> List[Path]:
         if found:
             break                       # the project's own copies are the ones being read
     return found
-
-
-def _changed_since(ctx: Context, commit: str, watched: Sequence[str]) -> List[str]:
-    """Which watched paths changed after a commit. Empty when git cannot answer."""
-    import subprocess
-
-    if not watched:
-        return []
-    root = Path(ctx.root) if ctx.root else Path(getattr(ctx.config, "root", "."))
-    try:
-        done = subprocess.run(["git", "diff", "--name-only", commit, "--", *watched],
-                              cwd=str(root), capture_output=True, text=True, timeout=15,
-                              check=False)
-    except (OSError, subprocess.SubprocessError):
-        return []
-    if done.returncode != 0:
-        return []
-    return sorted({line.split("/")[-1] for line in done.stdout.splitlines() if line.strip()})
 
 
 def catalogue() -> List[Check]:

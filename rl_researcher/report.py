@@ -10,6 +10,10 @@ It is safe to run repeatedly, and that is the point. A page only the process tha
 can produce is a page nobody can check, so every artefact here is reproducible from disk by a
 second command. Regenerating rewrites the generated sections and leaves the reading and the
 decision exactly as they were written.
+
+When the spec is the project's canary this is also where its result is recorded, because the
+canary's exercise runs to here and not to the end of the run: numbers a run produced but could
+not write up are not evidence the machinery works.
 """
 
 from __future__ import annotations
@@ -18,6 +22,7 @@ import json
 import sys
 
 from rl_researcher.artefacts import write_artefact_for
+from rl_researcher.canary import record_canary
 from rl_researcher.cli import console, load_all, spec_parser
 from rl_researcher.ledger import open_ledger
 
@@ -49,6 +54,18 @@ def main(argv=None) -> int:
     if ledger is not None:
         written = len(ledger.rows) - before
         print(f"ledger -> {written} new finding(s); {len(ledger.rows)} on file")
+
+    # The canary's exercise is check -> run -> status -> report, so this is where it ends and
+    # the only place that can say the whole chain worked. Bookkeeping, so it never raises:
+    # `report` is safe to re-run, and that is worth more than this line.
+    try:
+        recorded, why = record_canary(config, spec, summary)
+        if recorded is not None:
+            print(f"canary -> {recorded} ({str(summary.get('git_sha'))[:8]})")
+        elif why:
+            print(f"canary not recorded: {why}")
+    except Exception as exc:  # noqa: BLE001
+        print(f"canary not recorded: {type(exc).__name__}: {exc}")
     return 0
 
 
