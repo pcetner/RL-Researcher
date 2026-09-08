@@ -78,6 +78,18 @@ class NoRun(LookupError):
     """A name that does not name a spec in this project."""
 
 
+def _signal(pid: int, sig: int) -> None:
+    """``os.kill``, reached through a name of this module's own.
+
+    Not indirection for its own sake. On POSIX `lock.process_alive` asks whether a pid exists
+    with ``os.kill(pid, 0)`` -- the same call -- so a test that watches `os.kill` to see what
+    this page signalled also catches every liveness probe the page made on the way, and a test
+    that refuses the call outright refuses the probe. The seam separates "what did we ask this
+    process to do" from "did we ask whether it exists".
+    """
+    os.kill(pid, sig)
+
+
 def _windows() -> bool:
     """Whether stopping a run here can be clean.
 
@@ -400,7 +412,7 @@ def _stop(config: Config, payload: Dict[str, Any]) -> Tuple[int, Dict[str, Any]]
         return 409, {"error": WINDOWS_STOP, "needs": "kill"}
     pid = int(held.get("pid", -1))
     try:
-        os.kill(pid, signal.SIGTERM)
+        _signal(pid, signal.SIGTERM)
     except (OSError, ValueError) as exc:
         return 409, {"error": f"could not signal pid {pid}: {exc}"}
     clean = not _windows()
