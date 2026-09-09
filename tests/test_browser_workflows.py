@@ -192,8 +192,22 @@ def test_release_approval_and_explicit_toy_launch_are_separate(browser_board):
     page.goto(url + "/#run=toy-line-fit&view=overview")
     expect(page.get_by_role("button", name="Approve compute", exact=True)).to_be_visible()
     page.get_by_label("Approval note").fill("Approved the small CPU fixture run")
+    # Hold the final board refresh so an immediately visible Start control cannot
+    # silently swallow a click while the preceding approval is still busy.
+    page.evaluate("""() => {
+        const original = window.fetch;
+        const gate = new Promise(resolve => { window.releaseRefresh = resolve; });
+        window.fetch = async (...args) => {
+            if (args[0] === '/api/state') await gate;
+            return original(...args);
+        };
+    }""")
     page.get_by_role("button", name="Approve compute", exact=True).click()
-    expect(page.get_by_role("button", name="Start run", exact=True)).to_be_visible()
+    start = page.get_by_role("button", name="Start run", exact=True)
+    expect(start).to_be_visible()
+    expect(start).to_be_disabled()
+    page.evaluate("() => window.releaseRefresh()")
+    expect(start).to_be_enabled()
     with page.expect_response("**/api/run") as started:
         page.get_by_role("button", name="Start run", exact=True).click()
     assert started.value.status == 200, started.value.text()
