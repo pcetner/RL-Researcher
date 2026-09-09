@@ -8,8 +8,8 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 import subprocess
+import sys
 import threading
 import time
 from contextlib import contextmanager
@@ -74,14 +74,14 @@ def exclusive(config: Any, timeout: float = 5) -> Iterator[None]:
             while True:
                 try:
                     stream.seek(0)
-                    if os.name == "nt":
+                    if sys.platform == "win32":
                         import msvcrt
 
                         msvcrt.locking(stream.fileno(), msvcrt.LK_NBLCK, 1)
                     else:
                         import fcntl
 
-                        fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)  # type: ignore[attr-defined]
+                        fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
                     break
                 except OSError:
                     if time.monotonic() >= deadline:
@@ -95,14 +95,14 @@ def exclusive(config: Any, timeout: float = 5) -> Iterator[None]:
             finally:
                 _local.held = held
                 stream.seek(0)
-                if os.name == "nt":
+                if sys.platform == "win32":
                     import msvcrt
 
                     msvcrt.locking(stream.fileno(), msvcrt.LK_UNLCK, 1)
                 else:
                     import fcntl
 
-                    fcntl.flock(stream.fileno(), fcntl.LOCK_UN)  # type: ignore[attr-defined]
+                    fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
 
     finally:
         _mutex.release()
