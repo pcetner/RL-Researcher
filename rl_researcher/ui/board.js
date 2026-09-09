@@ -453,6 +453,13 @@
   }
   function wireActions(target) {
     target.querySelectorAll('[data-action]').forEach(b => { b.type = 'button'; b.onclick = () => act(b.dataset.action, b); });
+    if (busy) disableBusyActions(target);
+  }
+  function disableBusyActions(target) {
+    target.querySelectorAll('[data-action]:not(:disabled)').forEach(b => {
+      b.dataset.busyTitle = b.title; b.title = 'Saving and refreshing. Please wait.';
+      b.dataset.workflowBusy = 'true'; b.disabled = true;
+    });
   }
   async function act(action, b) {
     if (action === 'review-latest') { const s = session(); s.dirty = false; s.selected = null; await refresh(); await renderView(); say('Review the current evidence before submitting. Your note was kept.'); return; }
@@ -474,7 +481,7 @@
     if (action === 'decide') { body.selected = s.selected; body.note = s.note; body.revision = s.revision; }
     if (action === 'decide' || action === 'review') { body.evidence_revision = s.formEvidenceRevision; if (action === 'review') body.note = $('review-note')?.value || ''; body.operation_id = Workflow.operation(action,body); }
     if (action === 'approve') { body.quote = s.quote; if (!s.quote.trim()) { $('quote').reportValidity(); return; } }
-    busy = true; b.disabled = true;
+    busy = true; disableBusyActions(pane);
     say(action === 'report' ? 'Generating report…' : 'Saving…');
     try {
       let result;
@@ -498,7 +505,13 @@
       if (ticket !== generation) return;
       say(e.message, true);
       if (e.data?.reason_code === 'evidence_changed') { const review = document.createElement('button'); review.className = 'act'; review.textContent = 'Review latest evidence'; review.onclick = () => act('review-latest', review); $('message').append(review); }
-    } finally { busy = false; if (b.isConnected) b.disabled = false; }
+    } finally {
+      busy = false;
+      pane.querySelectorAll('[data-workflow-busy]').forEach(control => {
+        control.disabled = false; control.title = control.dataset.busyTitle;
+        delete control.dataset.workflowBusy; delete control.dataset.busyTitle;
+      });
+    }
   }
   async function refresh() {
     if (!current) return;
