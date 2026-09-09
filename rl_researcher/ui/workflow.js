@@ -55,7 +55,7 @@ const Workflow = (() => {
     if (!d.evidence) return '';
     let html = '<div class="review-card"><h2>Evidence</h2><p>' + esc(d.evidence.explanation || d.evidence.completion) + ' · revision ' + esc(d.evidence_revision.slice(0,12)) + '</p>';
     html += (d.evidence.sources || []).map(x => source(d.out + '/' + x.path,'Open evidence: ' + x.path)).join(' · ');
-    if (d.review) html += '<p>Reviewed · ' + esc(d.review.date) + ' · ' + esc(d.review.actor || 'Local user') + '</p>';
+    if (d.review) html += '<p>Reviewed · ' + esc(d.review.date) + ' · ' + esc(d.review.actor || 'Local user') + ' · ' + esc(d.review.applicability) + '</p>';
     else if (d.capabilities.review.enabled && !d.snapshot) html += '<label>Review note (optional)<textarea id="review-note" data-review-run="' + esc(d.run) + '">' + esc(drafts.get('review:' + d.run) || '') + '</textarea></label><button class="act" data-action="review">Mark reviewed</button>';
     else html += '<p>' + esc(d.capabilities.review.reason + ' ' + d.capabilities.review.next_step) + '</p>';
     if (d.decision_required && !d.decision && !d.capabilities.decide.enabled) html += '<p>Decision needed: ' + esc(d.capabilities.decide.reason + ' ' + d.capabilities.decide.next_step) + '</p>';

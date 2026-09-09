@@ -267,7 +267,9 @@ def test_recorded_decision_rows_without_choices_remain_readable(board_project):
                              "commit": str(summary.get("git_sha", ""))[:12]})
     assert row.choices == []
     open_ledger(config).add(row)
-    assert view(config)["decision"] is None
+    assert view(config)["decision"]["note"] == "Old decision."
+    assert view(config)["decision"]["applicability"] == "Evidence revision unknown"
+    assert not view(config)["decision_pending"]
     assert view(config)["decisions"][0]["note"] == "Old decision."
     assert view(config)["decisions"][0]["applicability"] == "Evidence revision unknown"
 
