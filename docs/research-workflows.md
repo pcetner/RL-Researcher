@@ -56,7 +56,7 @@ acknowledges its evidence, avoiding a second click.
 Evidence revision hashes the specification fingerprint, canonical result content,
 declared historical source files, authored Reading text, and resolved decision requirement
 and choices. Heartbeats, generated bookkeeping timestamps, JSON formatting, checkbox
-selections, and decision notes do not change it. Other changes require another review.
+selections, and decision notes do not change it. Changes from a recorded evidence revision require another review.
 Decision-required evidence also requires reconsideration; reaffirming a previous choice
 requires a new reason and creates a new record superseding the previous decision.
 
@@ -65,6 +65,19 @@ and `actor`. Decision deduplication includes the evidence revision. Other findin
 are unchanged. Existing rows are never rewritten. Current, Earlier evidence, and Evidence
 revision unknown are distinct applicability states. Matching an old fingerprint and commit
 does not silently bind an unversioned decision or acknowledgement to current evidence.
+
+Missing legacy metadata alone does not reopen previously handled work. Unversioned
+decisions and acknowledgements (including checked Reviewed reports) remain resolved
+history labeled **Evidence revision unknown**. This compatibility resolution neither
+asserts current evidence coverage nor writes a revision, migrates records, or changes
+holds. State exposes `legacy_resolved` separately from evidence applicability.
+An acknowledgement alone still does not resolve a required research decision.
+
+If a recorded evidence revision differs from the current revision, that demonstrates
+change: unknown legacy history cannot suppress another review or a required research
+decision. A new explicit acknowledgement or decision records a real revision normally.
+Without a recorded baseline, the toolkit cannot establish a content change retroactively
+and does not fabricate one from missing metadata, file timestamps, or report generation.
 
 Standard per-unit results continue using `kind.read_result`. An optional
 `kind.historical_evidence(spec, out)` hook supports aggregate-only evidence:

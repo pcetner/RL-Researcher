@@ -158,21 +158,71 @@ def test_reviewed_compatibility_and_explicit_override(evidence_project):
     assert not view(config, spec, kind, out)["capabilities"]["decide"]["enabled"]
 
 
-def test_unknown_legacy_decision_does_not_cover_current_evidence(evidence_project):
+@pytest.mark.parametrize("legacy", ["decision", "reviewed", "checkbox", "review_store"])
+def test_legacy_history_stays_resolved_without_inventing_revisions(evidence_project, legacy):
     config, kind, spec, out = evidence_project
     summary = read_evidence(spec, kind, out)["summary"]
-    open_ledger(config).add(
-        Finding(
-            kind="decision",
-            run=spec.name,
-            choices=["go"],
-            fingerprint=summary["fingerprint"],
-            commit=summary["git_sha"][:12],
+    if legacy != "decision":
+        md = out / "README.md"
+        md.write_text(
+            set_region(md.read_text(encoding="utf-8"), "authored", "decision",
+                       f"- [{'x' if legacy == 'checkbox' else ' '}] **Reviewed** — handled"),
+            encoding="utf-8",
         )
+    if legacy in ("decision", "reviewed"):
+        open_ledger(config).add(Finding(
+            kind="decision", run=spec.name,
+            choices=["go" if legacy == "decision" else "Reviewed"],
+            fingerprint=summary["fingerprint"], commit=summary["git_sha"][:12],
+        ))
+    elif legacy == "review_store":
+        atomic.write_json(config.path("ledger") / "reviews.json", {
+            "records": [{"run": spec.name, "date": "2025-01-01", "note": "Handled"}],
+            "operations": {},
+        })
+    config.path("queue").write_text(
+        '[[entry]]\nrun="toy-line-fit"\nhold=true\nwhy="Separate research hold"',
+        encoding="utf-8",
     )
+    preserved = {
+        p: p.read_bytes() for p in config.root.rglob("*") if p.is_file()
+    }
     data = view(config, spec, kind, out)
-    assert data["decision"] is None and data["decision_pending"]
-    assert data["decisions"][0]["applicability"] == "Evidence revision unknown"
+    assert data["legacy_resolved"] and not data["evidence_changed"]
+    assert not data["review_required"] and not data["decision_pending"]
+    assert data["review"]["applicability"] == "Evidence revision unknown"
+    assert not data["review"].get("evidence_revision")
+    if legacy == "decision":
+        assert data["decision"]["applicability"] == "Evidence revision unknown"
+        assert not data["decision"]["evidence_revision"]
+    board = serve.api(config, "GET", "/api/state")[1]
+    assert not any(r["run"] == spec.name for r in board["waiting"])
+    assert board["on_hold"][0]["why"] == "Separate research hold"
+    assert not data["capabilities"]["run"]["enabled"]
+    assert {p: p.read_bytes() for p in config.root.rglob("*") if p.is_file()} == preserved
+
+    # A voluntary current acknowledgement supplies a real baseline. Merely adding
+    # metadata does not revoke the historical decision; a later content change does.
+    submit(config, "review", request(config, "review"))
+    assert not view(config, spec, kind, out)["decision_pending"]
+    summary["new_observation"] = True
+    atomic.write_json(out / "results.json", summary)
+    changed = view(config, spec, kind, out)
+    assert changed["evidence_changed"] and changed["review_required"]
+    assert not changed["legacy_resolved"]
+    assert changed["decision_pending"] == (legacy == "decision")
+    assert any(r["applicability"] == "Evidence revision unknown"
+               for r in [*changed["reviews"], *changed["decisions"]])
+
+
+def test_legacy_acknowledgement_does_not_resolve_a_research_choice(evidence_project):
+    config, kind, spec, out = evidence_project
+    open_ledger(config).add(Finding(kind="decision", run=spec.name, choices=["Reviewed"]))
+    data = view(config, spec, kind, out)
+    assert not data["review_required"]
+    assert data["decision_pending"] and data["decision"] is None
+    assert not data["decisions"]
+    assert data["reviews"][0]["applicability"] == "Evidence revision unknown"
 
 
 def test_review_revalidates_external_evidence_at_commit(evidence_project, monkeypatch):
