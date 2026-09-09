@@ -26,7 +26,9 @@ jobs:
       - name: Lint
         run: ruff check rl_researcher tests
       - name: Type-check
-        run: mypy rl_researcher
+        run: |
+          mypy --platform linux rl_researcher
+          mypy --platform win32 rl_researcher
       - name: Tests (includes the toy kind end to end)
         run: pytest -q
 
