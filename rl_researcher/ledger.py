@@ -95,6 +95,11 @@ class Finding:
     supersedes: List[str] = field(default_factory=list)
     note: str = ""
     choices: List[str] = field(default_factory=list)  # explicit human choices on decision rows
+    evidence_revision: str = ""
+    operation_id: str = ""
+    binding: str = ""
+    sources: List[Dict[str, Any]] = field(default_factory=list)
+    actor: str = ""
 
     def to_json(self) -> Dict[str, Any]:
         d = asdict(self)
@@ -111,10 +116,11 @@ class Finding:
         return Finding(**{k: v for k, v in d.items() if k in known})
 
     @property
-    def identity(self) -> "tuple[str, str, str, str, str, str]":
+    def identity(self) -> "tuple[str, ...]":
         """What makes two rows the same claim. Regenerating a report produces rows with this
         identity already present, and they are not written again."""
-        return (self.kind, self.run, self.unit, self.metric, self.fingerprint, self.commit)
+        base = (self.kind, self.run, self.unit, self.metric, self.fingerprint, self.commit)
+        return (*base, self.evidence_revision) if self.kind == "decision" else base
 
     def line(self) -> str:
         """One chronological line, the form a PLAN evidence region is made of."""

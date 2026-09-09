@@ -31,6 +31,14 @@ def _f(**kw) -> Finding:
 # --------------------------------------------------------------------------- the ledger
 
 
+def current_evidence(project):
+    from rl_researcher.config import load_config
+    from rl_researcher.workflow import resolve
+    from rl_researcher.evidence import read_evidence
+    kind, spec, out = resolve(load_config(project), "toy-line-fit")
+    return read_evidence(spec, kind, out)["revision"]
+
+
 def test_the_same_claim_is_never_written_twice(tmp_path):
     """Regenerating a report must not duplicate its rows; identity is what stops it."""
     led = Ledger(tmp_path / "findings.jsonl")
@@ -192,7 +200,7 @@ def test_a_finished_run_waits_until_the_ticked_choice_is_recorded(project, capsy
     assert state.main([]) == 0
     view = json.loads((project / "docs" / "state.json").read_text(encoding="utf-8"))
     assert [w["run"] for w in view["waiting"]] == ["toy-line-fit"]
-    assert decide.main([SPEC]) == 0
+    assert decide.main([SPEC, "--note", "The result supports this choice", "--evidence-revision", current_evidence(project)]) == 0
     view = json.loads((project / "docs" / "state.json").read_text(encoding="utf-8"))
     assert view["waiting"] == []
 
@@ -208,9 +216,9 @@ def test_decide_refuses_until_a_person_has_ticked_a_box(project, capsys):
 
     report.write_text(set_region(report.read_text(encoding="utf-8"), "authored", "decision",
                                  "- [x] stop"), encoding="utf-8")
-    assert decide.main([SPEC, "--note", "the bar was wrong"]) == 0
+    assert decide.main([SPEC, "--note", "the bar was wrong", "--evidence-revision", current_evidence(project)]) == 0
     said = capsys.readouterr().out
-    assert "decided" in said and "stop" in said
+    assert "Decision recorded" in said and "stop" in said
 
     from rl_researcher.config import load_config
 
@@ -319,7 +327,7 @@ def test_a_decision_recorded_through_the_library_matches_one_typed_at_a_terminal
     kind = kind_for(project / SPEC, config)
     spec = kind.load(project / SPEC)
 
-    typed = record(config, spec, out, note="because the hinge held")
+    typed = record(config, spec, out, note="because the hinge held", evidence_revision=current_evidence(project))
     assert typed.code == 0 and typed.chose == ["go"] and typed.finding
     row = open_ledger(config).query(kind="decision")[0]
     assert row.via == "cli" and row.note == "because the hinge held"
@@ -327,7 +335,7 @@ def test_a_decision_recorded_through_the_library_matches_one_typed_at_a_terminal
 
     # The dashboard's row. Same claim, so the ledger's identity dedup returns the row already
     # on file rather than writing a second one -- which is itself the guarantee being checked.
-    from_page = record(config, spec, out, note="because the hinge held", via="dashboard")
+    from_page = record(config, spec, out, note="because the hinge held", via="dashboard", evidence_revision=current_evidence(project))
     assert from_page.code == 0
     again = open_ledger(config).query(kind="decision")
     assert len(again) == 1, "one claim, one row, whoever asked"

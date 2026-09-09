@@ -61,7 +61,7 @@ def write_text(target: Path, text: str, *, encoding: str = "utf-8") -> Path:
     """Write ``text`` to ``target`` atomically: no reader ever sees a partial file."""
     target.parent.mkdir(parents=True, exist_ok=True)
     tmp = temp_for(target)
-    tmp.write_text(text, encoding=encoding)
+    tmp.write_text(text, encoding=encoding, newline="")
     replace_with_retry(tmp, target)
     return target
 

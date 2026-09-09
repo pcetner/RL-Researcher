@@ -184,11 +184,13 @@ def read_unit(cell: Path, *, unit: str, heartbeat_seconds: float,
     if side is not None:
         st.checkpoint_step = int(side.get("step", 0))
     result = read_json(cell / RESULTS_NAME)
+    if (cell / RESULTS_NAME).is_file() and not isinstance(result, dict):
+        raise ValueError(f"Unreadable result object: {cell / RESULTS_NAME}")
     if result is not None and normalise is not None:
         try:
             result = normalise(result)
-        except Exception:  # noqa: BLE001 - a kind's translation must never blind the status
-            pass
+        except Exception as exc:
+            raise ValueError(f"Result translation failed for {cell}: {exc}") from exc
     progress = read_json(cell / PROGRESS_NAME)
     if result is not None:
         st.result = result

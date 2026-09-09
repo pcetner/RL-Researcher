@@ -28,7 +28,6 @@ from rl_researcher.blocks import KV, Notices, UnitsTable
 from rl_researcher.config import Config
 from rl_researcher.ledger import Ledger, open_ledger
 from rl_researcher.regions import find
-from rl_researcher.spec import load_toml
 from rl_researcher.status import RunStatus, run_status
 from rl_researcher.units import stamp_now, stamp_of
 
@@ -59,6 +58,8 @@ class Waiting:
     headline: List[str] = field(default_factory=list)
     options: List[str] = field(default_factory=list)
     finished: str = ""
+    review_required: bool = False
+    decision_required: bool = False
 
 
 @dataclass
@@ -76,6 +77,9 @@ class StateView:
     health: Dict[str, Any] = field(default_factory=dict)
     context: Dict[str, Any] = field(default_factory=dict)
     findings: List[Dict[str, Any]] = field(default_factory=list)
+    catalog: List[Dict[str, Any]] = field(default_factory=list)
+    on_hold: List[Dict[str, Any]] = field(default_factory=list)
+    queue_revision: str = ""
 
     def to_json(self) -> Dict[str, Any]:
         return {
@@ -83,6 +87,7 @@ class StateView:
             "waiting": [w.__dict__ for w in self.waiting],
             "running": self.running, "queued": self.queued,
             "decided": self.decided, "ready": self.ready, "health": self.health,
+            "catalog": self.catalog, "on_hold": self.on_hold, "queue_revision": self.queue_revision,
         }
 
 
@@ -91,7 +96,7 @@ class StateView:
 
 def specs_in(config: Config) -> List[Path]:
     d = config.path("specs")
-    return sorted(p for p in d.glob("*.toml") if p.is_file()) if d.is_dir() else []
+    return sorted(p for p in d.glob("*.toml") if p.is_file() and p.resolve() != config.path("queue").resolve()) if d.is_dir() else []
 
 
 def _decision_region(artefact: Path) -> Optional[str]:
@@ -227,48 +232,51 @@ def build_state(config: Config, *, ledger: Optional[Ledger] = None,
         except Exception as exc:  # noqa: BLE001 - one broken spec must not blank the page
             view.health.setdefault("unreadable_specs", []).append(f"{spec_path.name}: {exc}")
             continue
-        out = config.out_root(kind_name) / spec.name
-        st = run_status(spec, kind, out, stale_factor=float(config.watcher.stale_factor))
-        summary_path = out / "results.json"
-        artefact = out / "README.md"
-        if st.finished and summary_path.is_file():
-            body = _decision_region(artefact)
-            summary = json.loads(summary_path.read_text(encoding="utf-8"))
-            reading = section(artefact.read_text(encoding="utf-8"), "Reading") if artefact.is_file() else None
-            reading = re.sub(r"<!--.*?-->", "", reading or "", flags=re.S).strip()
-            if "write here:" in reading[:30]:
-                reading = ""
-            from rl_researcher.presentation import hypothesis_view
-            finding_copy = hypothesis_view(config.root, spec.name, spec.hypothesis)["finding_summary"]
-            view.findings.append({"run": spec.name, "date": _finished_at(st),
-                                  "summary": finding_copy or (reading.split("\n\n")[0] if reading else _outcome_line(spec, summary)),
-                                  "source": "Report reading" if reading else "Registered outcome"})
-            recorded = [r for r in ledger.query(kind="decision", run=spec.name)
-                        if r.fingerprint == str(summary.get("fingerprint", ""))
-                        and r.commit == str(summary.get("git_sha", ""))[:12]]
-            if not recorded:
-                view.waiting.append(Waiting(
-                    run=spec.name, kind=kind_name,
-                    artefact=_rel(config, artefact),
-                    outcome=_outcome_line(spec, summary),
-                    headline=_headline(spec, summary),
-                    options=options(body),
-                    finished=_finished_at(st),
-                ))
+        try:
+            out = config.out_root(kind_name) / spec.name
+            st = run_status(spec, kind, out, stale_factor=float(config.watcher.stale_factor))
+            summary_path = out / "results.json"
+            artefact = out / "README.md"
+            if st.finished and summary_path.is_file():
+                body = _decision_region(artefact)
+                summary = json.loads(summary_path.read_text(encoding="utf-8"))
+                reading = section(artefact.read_text(encoding="utf-8"), "Reading") if artefact.is_file() else None
+                reading = re.sub(r"<!--.*?-->", "", reading or "", flags=re.S).strip()
+                if "write here:" in reading[:30]:
+                    reading = ""
+                from rl_researcher.presentation import hypothesis_view
+                finding_copy = hypothesis_view(config.root, spec.name, spec.hypothesis)["finding_summary"]
+                view.findings.append({"run": spec.name, "date": _finished_at(st),
+                                      "summary": finding_copy or (reading.split("\n\n")[0] if reading else _outcome_line(spec, summary)),
+                                      "source": "Report reading" if reading else "Registered outcome"})
+                recorded = [r for r in ledger.query(kind="decision", run=spec.name)
+                            if r.fingerprint == str(summary.get("fingerprint", ""))
+                            and r.commit == str(summary.get("git_sha", ""))[:12]]
+                if not recorded:
+                    view.waiting.append(Waiting(
+                        run=spec.name, kind=kind_name,
+                        artefact=_rel(config, artefact),
+                        outcome=_outcome_line(spec, summary),
+                        headline=_headline(spec, summary),
+                        options=options(body),
+                        finished=_finished_at(st),
+                    ))
+                else:
+                    view.decided.append({"run": spec.name, "chose": recorded[-1].choices or ticked(body),
+                                         "id": recorded[-1].id,
+                                         "date": recorded[-1].date,
+                                         "artefact": _rel(config, artefact)})
+            elif st.state != "not started":
+                view.running.append(_running_row(config, spec, st, out))
             else:
-                view.decided.append({"run": spec.name, "chose": recorded[-1].choices or ticked(body),
-                                     "id": recorded[-1].id,
-                                     "date": recorded[-1].date,
-                                     "artefact": _rel(config, artefact)})
-        elif st.state != "not started":
-            view.running.append(_running_row(config, spec, st, out))
-        else:
-            from rl_researcher.gate import decide as gate_decide
-            gate = gate_decide(spec, kind, config, out=out)
-            view.ready.append({"run": spec.name, "kind": kind_name,
-                               "spec": _rel(config, spec_path),
-                               "units": len(st.units), "approval_needed": gate.gated and not gate.approved,
-                               "wall_seconds": gate.cost.wall_seconds})
+                from rl_researcher.gate import decide as gate_decide
+                gate = gate_decide(spec, kind, config, out=out)
+                view.ready.append({"run": spec.name, "kind": kind_name,
+                                   "spec": _rel(config, spec_path),
+                                   "units": len(st.units), "approval_needed": gate.gated and not gate.approved,
+                                   "wall_seconds": gate.cost.wall_seconds})
+        except Exception as exc:
+            view.health.setdefault("unreadable_specs", []).append(f"{spec_path.name}: {exc}")
 
     plan = config.path("plan").resolve()
     view.context = {"goal": config.goal, "focus": config.focus,
@@ -279,6 +287,8 @@ def build_state(config: Config, *, ledger: Optional[Ledger] = None,
     view.queued = _queue(config)
     view.decided = _recent_decisions(ledger, view.decided, limit=history_limit)
     view.health.update(_health(config, ledger))
+    from rl_researcher.workflow import decorate
+    decorate(config, view)
     return view
 
 
@@ -329,20 +339,16 @@ def _running_row(config: Config, spec: Any, st: RunStatus, out: Path) -> Dict[st
 
 
 def _queue(config: Config) -> List[Dict[str, Any]]:
-    p = config.path("queue")
-    if not p.is_file():
-        return []
-    try:
-        data = load_toml(p)
-    except Exception as exc:  # noqa: BLE001
-        return [{"run": f"(queue unreadable: {exc})", "hold": True}]
-    return [dict(e) for e in data.get("entry", [])]
+    from rl_researcher.research_queue import snapshot
+    data = snapshot(config)
+    return data["entries"] if not data["error"] else [{"run": data["error"], "hold": True}]
 
 
 def _recent_decisions(ledger: Ledger, from_stubs: List[Dict[str, Any]],
                       limit: Optional[int] = 5) -> List[Dict[str, Any]]:
     rows: List[Dict[str, Any]] = [
-        {"run": r.run, "chose": r.choices or ([r.note] if r.note else []), "date": r.date, "id": r.id}
+        {"run": r.run, "chose": r.choices or ([r.note] if r.note else []), "date": r.date, "id": r.id,
+         "note": r.note, "artefact": r.artefact, "evidence_revision": r.evidence_revision, "actor": r.actor}
         for r in reversed(ledger.query(kind="decision"))]
     rows.sort(key=lambda r: str(r["date"]), reverse=True)
     current = {d["run"]: d for d in from_stubs}
@@ -406,10 +412,9 @@ def build_artefact(view: StateView, state_root: str = "docs") -> Artefact:
             waiting.append("\n".join(w.headline))
         if w.options:
             waiting.append("**Options on the stub.** " + " · ".join(w.options))
-        waiting.append(
-            f"Finished {w.finished or 'at an unrecorded time'}. Read "
-            f"[{w.artefact}]({_link(w.artefact, state_root)}); tick a box in its decision "
-            f"region, then run `python -m rl_researcher.decide {w.run}`.")
+        needs = " · ".join(label for enabled, label in ((w.review_required, "Evidence needs review"),
+                          (w.decision_required, "Research decision needed")) if enabled)
+        waiting.append(f"{needs}. Open the live board to review the evidence and its revision.")
     art.say("waiting", "\n\n".join(waiting) if waiting else "Nothing is waiting on a decision.")
 
     if view.running:
@@ -425,20 +430,27 @@ def build_artefact(view: StateView, state_root: str = "docs") -> Artefact:
     else:
         art.say("running", "Nothing is running.")
 
-    if view.queued:
-        art.add("queued", UnitsTable(
-            headers=("run", "estimate", "gate", "approval", "hold"),
-            rows=[[q.get("run", "?"), q.get("estimate", "-"), q.get("gate", "-"),
-                   q.get("approval", "-"), "yes" if q.get("hold") else ""]
-                  for q in view.queued]))
-    else:
-        art.say("queued", "The queue is empty.")
+    queue_sections = []
+    for title, rows in (("On hold", view.on_hold), ("Next work", [q for q in view.queued if not q.get("hold") and not any(r["run"] == q["run"] and r.get("state") in ("running", "finished") for r in view.catalog)])):
+        queue_sections.append("## " + title)
+        queue_sections.extend(f"- **{q['run']}**: {q.get('why') or q.get('summary') or 'Explicitly queued'}. "
+                              + str(q.get('diagnostic') or "") for q in rows)
+        if not rows:
+            queue_sections.append("None.")
+    if view.health.get("queue_error"):
+        queue_sections.append(str(view.health["queue_error"]))
+    queue_sections.append("## Specifications (active discovery scope)")
+    queue_sections.extend(f"- [{r['run']}]({_link(r['spec'], state_root)}): "
+                          + str(r.get('diagnostic') or r.get('state') or 'Registered') for r in view.catalog)
+    art.say("queued", "\n\n".join(queue_sections))
 
     if view.decided:
         art.add("decided", Notices(items=[
             ("muted", str(d["run"]),
              (", ".join(d.get("chose") or []) or "(no choice recorded)")
-             + (f" [{d['id']}]" if d.get("id") else ""))
+             + (f" [{d['id']}]" if d.get("id") else "")
+             + " · " + str(d.get("applicability", "Evidence revision unknown"))
+             + " · " + str(d.get("evidence_revision") or "unversioned"))
             for d in view.decided]))
     else:
         art.say("decided", "No decisions recorded yet.")

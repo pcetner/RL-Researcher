@@ -31,20 +31,26 @@
   }
 
 
-  async function request(method, url, body) {
-    const response = await fetch(url, {method, credentials:'same-origin',
-      headers: body ? {'Content-Type':'application/json'} : {},
-      body: body ? JSON.stringify(body) : undefined});
-    const data = await response.json();
-    if (!response.ok) { const error = new Error(data.error || data.message || 'Request failed.'); error.data = data; throw error; }
-    return data;
+  const resourceErrors = new Map(), lastUpdates = new Map();
+  function resource(name, error=null) {
+    if (error) resourceErrors.set(name,error); else { resourceErrors.delete(name); lastUpdates.set(name,new Date()); }
+    const failure = resourceErrors.values().next().value;
+    const label = failure ? ({transport:'Connection lost · retrying',http:'Server request failed',response:'Invalid server response',render:'Could not display updates'}[failure.kind || 'render']) : boardData?.context?.snapshot ? 'Preview' : 'Live · 5s';
+    $('connection').textContent = label + (failure?.kind === 'http' ? ' · ' + failure.message : '');
+    $('connection').title = (failure ? failure.message + '. ' : '') + 'Last successful board refresh: ' + (lastUpdates.get('board')?.toLocaleTimeString() || 'Never');
+    $('connection').className = failure ? 'stamp bad' : 'stamp';
+    $('reload').hidden = !failure; $('reload').textContent = failure?.kind === 'transport' ? 'Reconnect' : 'Retry';
   }
-  function connected(ok) {
-    $('connection').textContent = ok ? (boardData?.context?.snapshot ? 'Preview' : 'Live · 5s') : 'Disconnected · retrying';
-    $('connection').title = boardData?.context?.snapshot ? 'Saved research data; this preview does not run experiments.' : 'Updates automatically every five seconds.';
-    $('reload').hidden = ok;
-    $('reload').textContent = 'Reconnect';
-    $('connection').className = ok ? 'stamp' : 'stamp bad';
+  async function request(method, url, body) {
+    let response;
+    try { response = await fetch(url,{method,credentials:'same-origin',headers:body ? {'Content-Type':'application/json'} : {},body:body ? JSON.stringify(body) : undefined}); }
+    catch (error) { error.kind = 'transport'; throw error; }
+    let data;
+    try { data = await response.json(); }
+    catch (_) { const error = new Error(response.ok ? 'Expected a JSON response.' : 'HTTP ' + response.status); error.kind = response.ok ? 'response' : 'http'; throw error; }
+    if (!response.ok) { const error = new Error('HTTP ' + response.status + ': ' + (data.error || data.message || 'Request failed')); error.kind = 'http'; error.data = data; throw error; }
+    if (!data || typeof data !== 'object' || Array.isArray(data)) { const error = new Error('Expected a response object.'); error.kind = 'response'; throw error; }
+    return data;
   }
   function say(message, bad=false) {
     if (!$('message')) return;
@@ -74,11 +80,11 @@
     (data.running || []).forEach(r => add(r.state === 'running' ? 1 : 0, r.run,
       r.state === 'running' ? r.done + '/' + r.total + ' units · active ETA ' + r.eta : plain(r.state || 'Stopped'), since(r)));
     (data.queued || []).forEach(r => add(2, r.run, r.hold ? 'On hold' : 'Queued', since(r)));
-    (data.ready || []).forEach(r => add(2, r.run, 'Ready · ' + r.units + ' units', since(r)));
+
     (data.decided || []).forEach(r => add(3, r.run, plain((r.chose || []).join(', ')) || 'Decided', since(r)));
     const historyOpen = !!target.querySelector('details[open]');
     const focused = document.activeElement && document.activeElement.dataset.run;
-    const titles = ['Needs attention', 'Running', 'Ready / Queued', 'History'];
+    const titles = ['Needs attention', 'Running', 'Queued / On hold', 'History'];
     const signature = JSON.stringify([groups, current, query]);
     if (signature !== railSignature) {
       const scroll = rail.scrollTop;
@@ -104,8 +110,20 @@
       '</p>' + (h.unreadable_specs || []).map(x => '<p class="fail">' + esc(x) + '</p>').join('');
   }
   async function board() {
-    try { boardData = await request('GET', '/api/state'); paintRail(boardData); if (!current) paintHome(); connected(true); }
-    catch (_) { connected(false); }
+    const previous = boardData, oldPane = [...pane.childNodes], oldList = [...$('run-list').childNodes], oldHealth = [...$('health').childNodes], oldSignature = railSignature;
+    let rendering = false;
+    try {
+      const data = await request('GET','/api/state');
+      if (['running','waiting','ready','queued','decided'].some(k => !Array.isArray(data[k])) ||
+          data.catalog && (!Array.isArray(data.catalog) || !Array.isArray(data.on_hold))) {
+        const error = new Error('Invalid board collections.'); error.kind = 'response'; throw error;
+      }
+      rendering = true; boardData = data; paintRail(data); if (!current) paintHome(); resource('board');
+    } catch (error) {
+      boardData = previous;
+      if (rendering) { pane.replaceChildren(...oldPane); $('run-list').replaceChildren(...oldList); $('health').replaceChildren(...oldHealth); railSignature = oldSignature; }
+      resource('board',error);
+    }
   }
   function route() {
     const hash = current ? '#run=' + encodeURIComponent(current) + '&view=' + session().view : '#' + homeView;
@@ -114,7 +132,7 @@
   function readRoute() {
     const q = new URLSearchParams(location.hash.slice(1)), name = q.get('run');
     const view = ['overview','results','units','logs'].includes(q.get('view')) ? q.get('view') : 'overview';
-    if (name) openRun(name, view, true); else openHome(true, location.hash === '#activity' ? 'activity' : 'home');
+    if (name) openRun(name, view, true); else openHome(true, location.hash === '#activity' ? 'activity' : location.hash === '#catalog' ? 'catalog' : 'home');
   }
   function openHome(fromHistory=false, view='home') {
     homeView = view;
@@ -126,6 +144,7 @@
     if (boardData) { paintRail(boardData); paintHome(); }
   }
   function paintHome() {
+    if (boardData.catalog) { Workflow.paintHome(boardData, homeView, openRun); return; }
     const focused = pane.contains(document.activeElement) ? document.activeElement : null;
     const focusKey = focused ? {run:focused.dataset.run, href:focused.getAttribute('href'), text:focused.textContent} : null;
     const openDetails = [...pane.querySelectorAll('.home details')].map(d => d.open);
@@ -202,7 +221,7 @@
       const next = event.key === 'Home' ? 0 : event.key === 'End' ? 3 : (at + (event.key === 'ArrowRight' ? 1 : 3)) % 4;
       tabs[next].focus(); tabs[next].click();
     };
-    $('form-slot').innerHTML = renderForm(d); session().formKind = formKind(d); wireForm();
+    $('form-slot').innerHTML = renderForm(d); session().formKind = formKind(d); if (!session().dirty || !session().formEvidenceRevision) session().formEvidenceRevision = d.evidence_revision; wireForm(); wireActions($('form-slot'));
     updateHeader(d);
   }
   function updateHeader(d) {
@@ -217,7 +236,7 @@
     // Do not replace a focused/open menu during background updates.
     if (!tools.parentElement.open) {
       tools.innerHTML = link(d.report_source || d.page, 'Full report') + link(d.spec, 'Specification') + link(d.dashboard, 'Standalone dashboard') +
-        (d.results && !d.snapshot && !isRunning(d) ? button('Regenerate report', 'report') : '') +
+        (!d.snapshot && (d.capabilities ? d.capabilities.report.enabled : d.results && !isRunning(d)) ? button('Regenerate report', 'report') : '') +
         (isRunning(d) ? button('Stop run', 'stop', 'warn') : '');
       wireActions(tools);
     }
@@ -242,7 +261,7 @@
       if (!session().dirty) session().revision = d.revision;
       shell(d); await renderView(); pane.scrollTop = session().scroll || 0;
       if (session().message) say(session().message.message, session().message.bad);
-    } catch (e) { if (ticket === generation) pane.innerHTML = '<p class="empty">' + esc(e.message) + '</p>'; }
+    } catch (e) { if (ticket === generation) { const entry = boardData?.catalog?.find(r => r.run === name); pane.innerHTML = '<p class="empty">' + esc(e.message) + '</p><p>' + esc(e.data?.next_step || entry?.next_step || 'Open Specifications to inspect this item.') + '</p>' + link(entry?.spec, 'Open specification') + ' ' + link('rl-researcher.toml', 'Open configuration'); } }
   }
   function metrics(research, all=false) {
     let rows = research.rows || [];
@@ -269,7 +288,7 @@
   function overviewBody(d) {
     const p = d.progress, r = d.research;
     const alerts = (d.alerts || []).map(a => '<div class="alert"><strong>' + esc(a.unit.replace('/seed', ' · seed ')) + '</strong><p class="error-text">' + esc(a.message) + '</p>' + (a.message.startsWith('Test fixture:') ? '<p class="muted">Simulated failure for interface testing.</p>' : '<p class="muted">Recorded error or status; cause may require investigation.</p>') + '</div>').join('');
-    let body = d.hold ? '<div class="alert"><strong>Research hold</strong><p>' + esc(d.hold) + '</p><p>Compute approval does not release this hold. Update the project queue after the research decision.</p></div>' : '';
+    let body = d.hold ? '<div class="alert"><strong>Research hold</strong><p>' + esc(d.hold) + '</p><p>Compute approval does not release this hold. Open Overview, then On hold, to release it with an explanation.</p></div>' : '';
     body += alerts;
     body += (r.warnings || []).map(w => '<div class="alert"><p>' + esc(w) + '</p></div>').join('');
     if (isRunning(d) || !d.results) {
@@ -309,16 +328,17 @@
   function fact(value, label) { return '<div class="fact"><strong>' + esc(value) + '</strong><span>' + label + '</span></div>'; }
   function formKind(d) {
     if (d.snapshot && d.options.length) return 'decision';
-    return d.decision ? 'recorded' : !isRunning(d) && d.state === 'finished' && d.results && d.page && d.options.length ? 'decision' :
+    return d.decision ? 'recorded' : !isRunning(d) && (d.capabilities ? d.capabilities.decide.enabled : d.state === 'finished' && d.results && d.page && d.options.length) ? 'decision' :
       !isRunning(d) && d.gated && !d.approved ? 'approval' : '';
   }
-  function renderForm(d) {
+  function renderForm(d) { return Workflow.reviewCard(d) + renderDecisionForm(d); }
+  function renderDecisionForm(d) {
     const s = session(), kind = formKind(d);
-    if (kind === 'recorded') return '<div class="decision-card"><h2>Decision recorded ' +
+    if (kind === 'recorded') return '<div class="decision-card"><p>Current evidence revision ' + esc(d.decision.evidence_revision || 'unknown') + '</p><h2>Decision recorded ' +
       chip(d.decision.id) + '</h2>' + ((d.decision.choices || []).length ? '<p><strong>' +
         esc(plain(d.decision.choices.join(' · '))) + '</strong></p>' : '') + '<p>' + esc(d.decision.note) + '</p></div>';
     if (kind === 'decision') {
-      if (!d.snapshot && !d.authored.some(r => r.startsWith('decision'))) return '<div class="decision-card"><h2>Decision</h2><p>Update this legacy report to enable the decision form.</p>' + button('Regenerate report','report','go') + '</div>';
+      if (!d.evidence && !d.snapshot && !d.authored.some(r => r.startsWith('decision'))) return '<div class="decision-card"><h2>Decision</h2><p>Update this legacy report to enable the decision form.</p>' + button('Regenerate report','report','go') + '</div>';
       return '<form id="decision-form" class="decision-bar"><label for="reason">Decision</label>' +
         '<textarea id="reason" required rows="1" placeholder="Why this decision?">' + esc(s.note) + '</textarea><div class="decision-buttons">' +
         d.options.map((o,i) => '<button type="button" class="act" data-choice="' + i + '" title="' + esc(plain(o)) + '">' +
@@ -435,6 +455,7 @@
     target.querySelectorAll('[data-action]').forEach(b => { b.type = 'button'; b.onclick = () => act(b.dataset.action, b); });
   }
   async function act(action, b) {
+    if (action === 'review-latest') { const s = session(); s.dirty = false; s.selected = null; await refresh(); await renderView(); say('Review the current evidence before submitting. Your note was kept.'); return; }
     if (action === 'reset-draft') {
       const s = session(); s.dirty = false; s.selected = null; s.note = ''; s.quote = '';
       await refresh(); await renderView(); say('Draft reset to the saved report.'); return;
@@ -451,6 +472,7 @@
     const name = current, s = session(), ticket = generation;
     const body = {run:name};
     if (action === 'decide') { body.selected = s.selected; body.note = s.note; body.revision = s.revision; }
+    if (action === 'decide' || action === 'review') { body.evidence_revision = s.formEvidenceRevision; if (action === 'review') body.note = $('review-note')?.value || ''; body.operation_id = Workflow.operation(action,body); }
     if (action === 'approve') { body.quote = s.quote; if (!s.quote.trim()) { $('quote').reportValidity(); return; } }
     busy = true; b.disabled = true;
     say(action === 'report' ? 'Generating report…' : 'Saving…');
@@ -464,7 +486,7 @@
       if (action === 'decide' || action === 'approve') s.dirty = false;
       if (action === 'decide') s.selected = null;
       if (action === 'run') { s.log = ''; s.offset = 0; s.exitShown = false; }
-      let message = {decide:'Decision recorded.', approve:'Compute approved. Research holds and launch checks still apply.', run:'Run starting…', report:'Report updated.', stop:'Stop requested.'}[action];
+      let message = {review:'Evidence reviewed.', decide:'Decision recorded.', approve:'Compute approved. Research holds and launch checks still apply.', run:'Run starting…', report:'Report updated.', stop:'Stop requested.'}[action];
       if (action === 'approve' && result.gated === false) message = 'No approval needed. You can start the run.';
       s.message = {message, bad:false};
       if (ticket !== generation) return;
@@ -475,6 +497,7 @@
       s.message = {message:e.message, bad:true};
       if (ticket !== generation) return;
       say(e.message, true);
+      if (e.data?.reason_code === 'evidence_changed') { const review = document.createElement('button'); review.className = 'act'; review.textContent = 'Review latest evidence'; review.onclick = () => act('review-latest', review); $('message').append(review); }
     } finally { busy = false; if (b.isConnected) b.disabled = false; }
   }
   async function refresh() {
@@ -485,14 +508,14 @@
       const d = await request('GET', '/api/run/' + encodeURIComponent(name) + '?light=1');
       if (ticket !== generation || name !== current || s.requestSequence !== sequence) return;
       if (d.broken || d.error) { say(d.broken || d.error, true); return; }
-      connected(true);
+
       if (s.message && s.message.message === 'Run starting…' && !isRunning(d)) {
         say(d.state === 'finished' ? 'Run finished.' : 'Run needs attention.', d.state !== 'finished');
       }
       s.data = d;
       if (!s.dirty) s.revision = d.revision;
       updateHeader(d);
-      if (s.formKind !== formKind(d) && !s.dirty) { $('form-slot').innerHTML = renderForm(d); s.formKind = formKind(d); wireForm(); }
+      if (!s.dirty && document.activeElement?.id !== 'review-note') { $('form-slot').innerHTML = renderForm(d); s.formKind = formKind(d); s.formEvidenceRevision = d.evidence_revision; wireForm(); wireActions($('form-slot')); }
       if (s.view === 'overview' && $('overview-data')) {
         // Only measured data changes while the user is editing a decision.
         const expanded = Array.from($('overview-data').querySelectorAll('details')).map(x => x.open);
@@ -509,7 +532,8 @@
         const at = pane.scrollTop;
         await renderView(); pane.scrollTop = at;
       }
-    } catch (_) { if (ticket === generation) connected(false); }
+      resource("run");
+    } catch (error) { if (ticket === generation) resource("run",error); }
   }
   async function pollLog() {
     const s = session();
@@ -530,7 +554,8 @@
         log.textContent = s.log || 'No log output yet.';
         if (atEnd) log.scrollTop = log.scrollHeight;
       }
-    } catch (_) { connected(false); }
+      resource("log");
+    } catch (error) { resource("log",error); }
     finally { s.logBusy = false; }
   }
   const drawer = document.createElement('dialog'); drawer.className = 'document-drawer'; drawer.setAttribute('aria-labelledby', 'document-title');
@@ -565,7 +590,7 @@
   rail.addEventListener('pointerdown', () => { railInteracting = true; });
   window.addEventListener('pointerup', () => { railInteracting = false; });
   window.addEventListener('pointercancel', () => { railInteracting = false; });
-  $('search').oninput = () => { if (boardData) paintRail(boardData); };
+  $('search').oninput = () => { if (boardData) { paintRail(boardData); if (!current) paintHome(); } };
   $('reload').onclick = async () => { await board(); await refresh(); };
   window.addEventListener('beforeunload', e => {
     if (hasEdits() || Array.from(sessions.values()).some(s => s.dirty)) { e.preventDefault(); e.returnValue = ''; }
@@ -574,6 +599,8 @@
   $('brand-home').onclick = e => { e.preventDefault(); openHome(); };
   $('toggle-runs').onclick = () => { const open = rail.classList.toggle('mobile-open'); $('toggle-runs').setAttribute('aria-expanded', open); };
   window.addEventListener('popstate', readRoute);
+  window.addEventListener('hashchange', readRoute);
+  window.addEventListener('workflowchange', async () => { await board(); await refresh(); });
   board().then(readRoute);
   setInterval(async () => {
     if (polling || busy || document.hidden || boardData?.context?.snapshot) return;
