@@ -50,14 +50,14 @@ from rl_researcher.artefacts.state import (_decision_region, build_state, option
                                            write_state)
 from rl_researcher.artefacts.writer import render_page
 from rl_researcher.cli import console
-from rl_researcher.config import Config, kind_for, load_config, out_dir_for, resolve_spec
-from rl_researcher.decide import record
+from rl_researcher.config import Config, load_config
 from rl_researcher.gate import decide as gate_decide
 from rl_researcher.gate import refusal_message, write_approval
 from rl_researcher.lock import lock_holder
+from rl_researcher.workflow_store import WorkflowError
+from rl_researcher.workflow import view as workflow_view
 from rl_researcher.regions import RegionError, find, set_region
 from rl_researcher.render import DOC_CSS, editable_article
-from rl_researcher.status import run_status
 from rl_researcher.style import BASE_CSS, EDIT_CSS, THEME_BUTTONS, THEME_SCRIPT
 from rl_researcher.units import stamp_now
 from rl_researcher.board_view import content, overview, revision
@@ -167,15 +167,8 @@ def allowed(host: str, origin: str, *, port: int) -> Optional[str]:
 
 def _resolve(config: Config, name: str) -> Tuple[Any, Any, Path]:
     """``(kind, spec, out)`` for a run named the way the command line names one."""
-    if not name:
-        raise NoRun("no run was named")
-    try:
-        spec_path = resolve_spec(name, config)
-        kind = kind_for(spec_path, config)
-        spec = kind.load(spec_path)
-    except (OSError, LookupError, ValueError) as exc:
-        raise NoRun(f"no run {name!r} in this project ({exc})") from exc
-    return kind, spec, out_dir_for(spec, config)
+    from rl_researcher.workflow import resolve
+    return resolve(config, name)
 
 
 def _rel(config: Config, p: Path) -> str:
@@ -202,12 +195,8 @@ def _busy(spec: Any, out: Path) -> Optional[Dict[str, Any]]:
 
 def research_hold(config: Config, name: str) -> str:
     """Queue holds are research constraints, independent of compute approval."""
-    from rl_researcher.artefacts.state import _queue
-    for entry in _queue(config):
-        if entry.get("hold") and (entry.get("run") == name or
-                                  str(entry.get("run", "")).startswith("(queue unreadable:")):
-            return str(entry.get("why") or "This run is on hold in the project queue.")
-    return ""
+    from rl_researcher.research_queue import hold
+    return hold(config, name)
 
 
 def _run_view(config: Config, name: str, *, light: bool = False) -> Tuple[int, Dict[str, Any]]:
@@ -314,75 +303,8 @@ _EDIT_LOCK = threading.RLock()
 
 
 def _decide(config: Config, payload: Dict[str, Any]) -> Tuple[int, Dict[str, Any]]:
-    with _EDIT_LOCK:
-        return _decide_locked(config, payload)
-
-
-def _decide_locked(config: Config, payload: Dict[str, Any]) -> Tuple[int, Dict[str, Any]]:
-    kind, spec, out = _resolve(config, str(payload.get("run", "")))
-    busy = _busy(spec, out)
-    if busy:
-        return 409, busy
-    if "selected" in payload:
-        from rl_researcher.ledger import open_ledger
-        from rl_researcher.units import read_json
-
-        md = out / "README.md"
-        text = md.read_text(encoding="utf-8") if md.is_file() else ""
-        body = _decision_region(md)
-        offered = options(body)
-        selected = payload["selected"]
-        if (not isinstance(selected, list) or not selected or
-                any(not isinstance(v, int) or isinstance(v, bool) or v < 0 or v >= len(offered)
-                    for v in selected) or len(set(selected)) != len(selected)):
-            return 400, {"error": "Select at least one of the offered choices."}
-        summary = read_json(out / "results.json") or {}
-        if run_status(spec, kind, out).state != "finished" or not summary:
-            return 409, {"error": "Finish the run and generate its report before recording a decision."}
-        existing = [r for r in open_ledger(config).query(kind="decision", run=spec.name)
-                    if r.fingerprint == str(summary.get("fingerprint", ""))
-                    and r.commit == str(summary.get("git_sha", ""))[:12]]
-        chose = [offered[i] for i in sorted(selected)]
-        note = str(payload.get("note") or "").strip()
-        if not note:
-            return 400, {"error": "Explain your decision before recording it.", "field": "note"}
-        if existing:
-            if (existing[-1].choices or ticked(body)) == chose and existing[-1].note == note:
-                write_state(config)
-                return 200, {"ok": True, "message": "Decision recorded.",
-                             "finding": existing[-1].id}
-            return 409, {"error": "A decision is already recorded for this result. Reload to view it."}
-        if payload.get("revision") != revision(text):
-            return 409, {"error": "This report changed. Reload before recording a decision.",
-                         "conflict": True}
-        n = -1
-
-        def choose(match: Any) -> str:
-            nonlocal n
-            n += 1
-            return match[1] + ("x" if n in selected else " ") + match[2]
-
-        fresh_body = re.sub(r"(?m)^(\s*[-*] \[)[ xX](\].*)$", choose, body or "")
-        region = next((r.arg for r in find(text) if r.kind == "authored"
-                       and r.arg.startswith("decision")), None)
-        if region is None:
-            return 409, {"error": "Regenerate this legacy report before using the decision form."}
-        code, saved = _write_region(config, {"run": spec.name, "region": region,
-                                            "body": fresh_body, "revision": payload["revision"]})
-        if code != 200:
-            return code, saved
-        try:
-            d = record(config, spec, out, note=note, via="dashboard")
-        except Exception as exc:
-            return 500, {"error": "Selection saved; decision recording needs a retry.",
-                         "details": str(exc), "revision": revision(md.read_text(encoding="utf-8"))}
-        return (200 if d.code == 0 else 409), {
-            "ok": d.code == 0, "message": "Decision recorded." if d.code == 0 else d.message,
-            "finding": d.finding, "revision": revision(md.read_text(encoding="utf-8"))}
-    d = record(config, spec, out, note=str(payload.get("note") or ""), via="dashboard")
-    return (200 if d.code == 0 else 409), {
-        "ok": d.code == 0, "message": d.message, "chose": d.chose,
-        "options": d.options, "finding": d.finding}
+    from rl_researcher.workflow import submit
+    return 200, submit(config, "decide", payload)
 
 
 def _approve(config: Config, payload: Dict[str, Any]) -> Tuple[int, Dict[str, Any]]:
@@ -435,7 +357,33 @@ def _report(config: Config, payload: Dict[str, Any]) -> Tuple[int, Dict[str, Any
     return (200 if code == 0 else 409), {"ok": code == 0, "message": said.strip(), "exit": code}
 
 
-def _launch(config: Config, payload: Dict[str, Any], runs: Dict[str, Launch]
+def _launch(config: Config, payload: Dict[str, Any], runs: Dict[str, Launch]) -> Tuple[int, Dict[str, Any]]:
+    from rl_researcher.workflow_store import exclusive, pending, read, launch_path, clear_launch
+    from rl_researcher import atomic
+    with exclusive(config):
+        kind, spec, out = _resolve(config, str(payload.get("run", "")))
+        if pending(config, spec.name):
+            return 409, {"error": "This run is already starting."}
+        cap = workflow_view(config, spec, kind, out)["capabilities"]["run"]
+        if not cap["enabled"]:
+            return 409, {"error": cap["reason"], **cap}
+        reservations = read(launch_path(config), {})
+        reservations[spec.name] = {"pid": None, "parent_pid": os.getpid(), "date": stamp_now()}
+        atomic.write_json(launch_path(config), reservations)
+        try:
+            code, data = _launch_unlocked(config, payload, runs)
+            if code == 200:
+                reservations[spec.name]["pid"] = data["pid"]
+                atomic.write_json(launch_path(config), reservations)
+            else:
+                clear_launch(config, spec.name)
+            return code, data
+        except Exception:
+            clear_launch(config, spec.name)
+            raise
+
+
+def _launch_unlocked(config: Config, payload: Dict[str, Any], runs: Dict[str, Launch]
             ) -> Tuple[int, Dict[str, Any]]:
     """Start a run as its own process, gate and all.
 
@@ -461,13 +409,13 @@ def _launch(config: Config, payload: Dict[str, Any], runs: Dict[str, Launch]
                             errors="replace", bufsize=1)
     launch = Launch(proc=proc, started=stamp_now())
     runs[spec.name] = launch
-    threading.Thread(target=_drain, args=(launch,), daemon=True).start()
+    threading.Thread(target=_drain, args=(launch, config, spec.name), daemon=True).start()
     return 200, {"ok": True, "pid": proc.pid,
                  "message": f"{spec.name}: started (pid {proc.pid}). The gate is applied inside "
                             f"that process, exactly as it is from a terminal."}
 
 
-def _drain(launch: Launch) -> None:
+def _drain(launch: Launch, config: Optional[Config] = None, name: str = "") -> None:
     """Keep the tail of what a launched run printed, without letting it fill memory."""
     try:
         for line in launch.proc.stdout:                      # type: ignore[union-attr]
@@ -477,6 +425,12 @@ def _drain(launch: Launch) -> None:
         pass
     finally:
         launch.proc.wait()
+        if config is not None:
+            from rl_researcher.workflow_store import exclusive, read, launch_path, clear_launch
+            with exclusive(config):
+                reservation = read(launch_path(config), {}).get(name, {})
+                if reservation.get("pid") == launch.proc.pid:
+                    clear_launch(config, name)
 
 
 def _stop(config: Config, payload: Dict[str, Any]) -> Tuple[int, Dict[str, Any]]:
@@ -559,10 +513,11 @@ def api(config: Config, method: str, path: str, payload: Optional[Dict[str, Any]
     if len(parts) < 2 or parts[0] != "api":
         return 404, {"error": f"no endpoint {parsed.path}"}
     verb = parts[1]
-    if len(parts) > 2:
+    if len(parts) > 2 and verb != "queue":
         body.setdefault("run", "/".join(parts[2:]))
 
     try:
+        from rl_researcher.workflow_store import exclusive
         if method == "GET":
             if verb == "document":
                 from rl_researcher.presentation import document
@@ -589,10 +544,21 @@ def api(config: Config, method: str, path: str, payload: Optional[Dict[str, Any]
             if verb == "log":
                 return _log(config, body, runs)
         elif method == "POST":
+            if verb == "queue" and len(parts) == 3:
+                from rl_researcher.research_queue import mutate, snapshot
+                result = mutate(config, parts[2], body)
+                return 200, {**result, "revision": snapshot(config)["revision"]}
+            if verb == "review" or (verb == "decide" and "operation_id" in body):
+                from rl_researcher.workflow import submit
+                return 200, submit(config, verb, body)
             if verb == "state":
                 return 200, {"ok": True, "state": _rel(config, write_state(config))}
             if verb == "region":
-                with _EDIT_LOCK:
+                with exclusive(config), _EDIT_LOCK:
+                    from rl_researcher.workflow import active
+                    kind, spec, out = _resolve(config, str(body.get("run", "")))
+                    if active(config, spec, out):
+                        return 409, {"error": "This run is running or starting; wait before editing."}
                     return _write_region(config, body)
             if verb == "decide":
                 return _decide(config, body)
@@ -607,6 +573,8 @@ def api(config: Config, method: str, path: str, payload: Optional[Dict[str, Any]
                 return _launch(config, body, runs)
             if verb == "stop":
                 return _stop(config, body)
+    except WorkflowError as exc:
+        return exc.status, exc.data
     except NoRun as exc:
         return 404, {"error": str(exc)}
     except Exception as exc:  # noqa: BLE001 - one broken spec must not take the page down
@@ -620,7 +588,8 @@ def api(config: Config, method: str, path: str, payload: Optional[Dict[str, Any]
 #: chips, the theme switch, the document rules and the authored-region rules -- comes from
 #: `style` and `render`, so this page and every exported page are the same page in two moods.
 BOARD_CSS = (Path(__file__).parent / "ui" / "board.css").read_text(encoding="utf-8")
-BOARD_SCRIPT = (Path(__file__).parent / "ui" / "board.js").read_text(encoding="utf-8")
+BOARD_SCRIPT = "\n".join((Path(__file__).parent / "ui" / name).read_text(encoding="utf-8")
+                         for name in ("workflow.js", "board.js"))
 
 
 def page(config: Config) -> str:

@@ -141,7 +141,8 @@ def test_a_ticked_box_changes_what_the_next_state_says(project):
                       .replace("_(write here)_", "The noisy arm missed both bars, as predicted."),
                       encoding="utf-8")
 
-    assert decide_main([spec.name]) == 0
+    from rl_researcher.evidence import read_evidence
+    assert decide_main([spec.name, "--note", "The evidence supports iteration", "--evidence-revision", read_evidence(spec, kind, out)["revision"]]) == 0
     view = build_state(config)
     assert [w.run for w in view.waiting] == []            # no longer awaiting a person
     assert [d["run"] for d in view.decided] == [spec.name]

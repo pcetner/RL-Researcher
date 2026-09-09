@@ -135,7 +135,9 @@ def test_report_is_written_from_disk_and_says_so_when_there_is_nothing_to_write(
     from rl_researcher import report
 
     assert report.main([SPEC]) == 1
-    assert "has not finished" in capsys.readouterr().out
+    missing = capsys.readouterr().out
+    assert "no usable summary is available" in missing
+    assert "Open the evidence or run status" in missing
 
     assert run.main([SPEC, "--max-seconds", "5"]) == 0
     assert report.main([SPEC]) == 0

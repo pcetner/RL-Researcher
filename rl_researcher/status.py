@@ -19,7 +19,7 @@ from rl_researcher.lock import lock_holder
 from rl_researcher.spec import RunSpec
 from rl_researcher.units import STALE_FACTOR, UnitState, read_unit, unit_dir
 
-STATE_RANK = {"FAILED": 0, "STALE": 1, "running": 2, "stopped": 3, "finished": 4, "not started": 5}
+STATE_RANK = {"FAILED": 0, "STALE": 1, "running": 2, "stopped": 3, "finished": 4, "historical": 5, "not started": 6}
 
 
 @dataclass
@@ -35,6 +35,8 @@ class RunStatus:
     #: does not have to guess that the file is named after the run. Every path here resolves a
     #: run by the `name` inside the file; only the filename is free to differ.
     spec_path: Optional[str] = None
+    historical: bool = False
+    historical_complete: bool = False
 
     @property
     def bad(self) -> bool:
@@ -46,7 +48,7 @@ class RunStatus:
 
     @property
     def finished(self) -> bool:
-        return bool(self.units) and all(u.done for u in self.units)
+        return self.historical_complete or (bool(self.units) and all(u.done for u in self.units))
 
     def to_dict(self) -> Dict:
         return {"run": self.run, "kind": self.kind, "out": str(self.out), "lock": self.lock,
@@ -80,8 +82,18 @@ def run_status(spec: RunSpec, kind: RunKind, out: Path, *,
              for u in kind.units(spec)]
     lock = lock_holder(out)
     state, tone = state_of(units, lock)
+    old = False
+    complete = False
+    if state == "not started" and not lock and not any(u.progress or u.resumable for u in units):
+        from rl_researcher.evidence import historical
+        evidence = historical(spec, kind, out)
+        if evidence["sources"]:
+            old = True
+            complete = evidence["completion"] == "complete"
+            state, tone = ("finished", "ok") if complete else ("historical", "warn")
     return RunStatus(run=spec.name, kind=kind.name, out=out, lock=lock, units=units, state=state,
-                     tone=tone, spec_path=getattr(spec, "source_path", None))
+                     tone=tone, spec_path=getattr(spec, "source_path", None),
+                     historical=old, historical_complete=complete)
 
 
 def format_status(st: RunStatus) -> List[str]:
@@ -95,7 +107,10 @@ def format_status(st: RunStatus) -> List[str]:
         where = "this machine" if held.get("alive") else held.get("host", "another machine")
         lines.append(f"a run is in progress (pid {held.get('pid')} on {where}, started {held.get('started', '?')})")
     width = max([len(u.arm) for u in st.units] + [8])
-    for u in st.units:
+    if st.historical:
+        lines.append("Historical evidence: " + ("completion verified by adapter" if st.historical_complete else "completion unknown")
+                     + "; original per-unit files are unavailable. Open the preserved evidence.")
+    for u in ([] if st.historical else st.units):
         head = f"{u.arm:>{width}} seed {u.seed}:"
         if u.status == "not started":
             lines.append(f"{head} not started")
