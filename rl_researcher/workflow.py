@@ -111,7 +111,7 @@ def view(config: Any, spec: Any, kind: Any, out: Path, *, status: Any = None) ->
     evidence = read_evidence(spec, kind, out, status)
     current = evidence["revision"]
     reviews = [
-        {**r, "applicability": applicability(r["evidence_revision"], current)}
+        {**r, "applicability": applicability(r.get("evidence_revision", ""), current)}
         for r in review_store(config)["records"]
         if r["run"] == spec.name
     ]
@@ -138,7 +138,9 @@ def view(config: Any, spec: Any, kind: Any, out: Path, *, status: Any = None) ->
     from rl_researcher.artefacts.state import _decision_region, ticked
 
     checked = ticked(_decision_region(out / "README.md"))
-    if checked and all(acknowledgement(c) for c in checked) and not reviews:
+    if checked and all(acknowledgement(c) for c in checked) and not any(
+        not r.get("evidence_revision") for r in reviews
+    ):
         reviews.append(
             {
                 "run": spec.name,
@@ -151,6 +153,22 @@ def view(config: Any, spec: Any, kind: Any, out: Path, *, status: Any = None) ->
         )
     review = next((r for r in reversed(reviews) if r["applicability"] == "Current"), None)
     decision = next((r for r in reversed(decisions) if r["applicability"] == "Current"), None)
+    # Missing provenance is not evidence of change. Keep handled legacy work
+    # resolved without claiming that its records cover the current revision.
+    # Once a recorded revision demonstrates change, unknown history must not
+    # mask the new review or decision requirement.
+    evidence_changed = any(
+        r["applicability"] == "Earlier evidence" for r in [*reviews, *decisions]
+    )
+    if not evidence_changed:
+        decision = decision or next(
+            (r for r in reversed(decisions) if not r.get("evidence_revision")), None
+        )
+        review = review or next(
+            (r for r in reversed(reviews) if not r.get("evidence_revision")), None
+        )
+        if not review and decision and not decision.get("evidence_revision"):
+            review = decision  # A historical research decision also acknowledged its evidence.
     busy = active(config, spec, out)
     blocked = capability(
         False,
@@ -229,6 +247,11 @@ def view(config: Any, spec: Any, kind: Any, out: Path, *, status: Any = None) ->
         "evidence": {k: v for k, v in evidence.items() if k != "summary"},
         "decision_policy": evidence["policy"],
         "decision_required": evidence["policy"]["decision_required"],
+        "evidence_changed": evidence_changed,
+        "legacy_resolved": bool(
+            (review and not review.get("evidence_revision"))
+            or (decision and not decision.get("evidence_revision"))
+        ),
         "review_required": evidence["available"] and not review and not decision,
         "decision_pending": evidence["policy"]["decision_required"]
         and evidence["available"]
@@ -253,7 +276,7 @@ def _ack(
 ) -> None:
     store = review_store(config)
     if not any(
-        r["run"] == run and r["evidence_revision"] == evidence["revision"] for r in store["records"]
+        r["run"] == run and r.get("evidence_revision") == evidence["revision"] for r in store["records"]
     ):
         store["records"].append(
             {

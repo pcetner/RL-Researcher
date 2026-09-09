@@ -91,6 +91,37 @@ def test_reviewed_only_report_has_no_redundant_decision(browser_board):
     expect(page.get_by_role("button", name="Mark reviewed", exact=True)).to_have_count(0)
 
 
+@pytest.mark.parametrize("choice", ["go", "Reviewed"])
+def test_legacy_resolved_history_is_not_reopened(browser_board, choice):
+    from playwright.sync_api import expect
+    from rl_researcher.ledger import Finding, open_ledger
+
+    config, page, url = browser_board
+    assert run.main(["toy-line-fit", "--max-seconds", "5"]) == 0
+    assert report.main(["toy-line-fit"]) == 0
+    if choice == "Reviewed":
+        md = config.out_root("toy") / "toy-line-fit" / "README.md"
+        md.write_text(set_region(md.read_text(encoding="utf-8"), "authored", "decision",
+                                 "- [x] Reviewed"), encoding="utf-8")
+    open_ledger(config).add(Finding(kind="decision", run="toy-line-fit", choices=[choice]))
+    page.goto(url)
+    attention = page.locator("section").filter(
+        has=page.get_by_role("heading", name="Needs attention", exact=True)
+    )
+    expect(attention).not_to_contain_text("toy-line-fit")
+    history = page.locator("section").filter(
+        has=page.get_by_role("heading", name="History", exact=True)
+    )
+    expect(history).to_contain_text("Evidence revision unknown")
+    page.goto(url + "/#run=toy-line-fit&view=overview")
+    expect(page.locator(".review-card")).to_contain_text("Evidence revision unknown")
+    expect(page.get_by_role("button", name="Mark reviewed", exact=True)).to_have_count(0)
+    expect(page.locator("#decision-form")).to_have_count(0)
+    if choice == "go":
+        expect(page.locator(".decision-card")).to_contain_text("Evidence revision unknown")
+        expect(page.locator(".decision-card")).not_to_contain_text("Current evidence revision")
+
+
 def test_broken_registration_does_not_break_board(browser_board):
     from playwright.sync_api import expect
 

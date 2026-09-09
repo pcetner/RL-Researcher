@@ -334,7 +334,7 @@
   function renderForm(d) { return Workflow.reviewCard(d) + renderDecisionForm(d); }
   function renderDecisionForm(d) {
     const s = session(), kind = formKind(d);
-    if (kind === 'recorded') return '<div class="decision-card"><p>Current evidence revision ' + esc(d.decision.evidence_revision || 'unknown') + '</p><h2>Decision recorded ' +
+    if (kind === 'recorded') return '<div class="decision-card"><p>' + esc(d.decision.applicability || 'Evidence revision unknown') + (d.decision.evidence_revision ? ' · ' + esc(d.decision.evidence_revision) : '') + '</p><h2>Decision recorded ' +
       chip(d.decision.id) + '</h2>' + ((d.decision.choices || []).length ? '<p><strong>' +
         esc(plain(d.decision.choices.join(' · '))) + '</strong></p>' : '') + '<p>' + esc(d.decision.note) + '</p></div>';
     if (kind === 'decision') {
