@@ -456,7 +456,7 @@
     if (busy) disableBusyActions(target);
   }
   function disableBusyActions(target) {
-    target.querySelectorAll('[data-action]:not(:disabled)').forEach(b => {
+    target.querySelectorAll('[data-action]:not(:disabled), [data-choice]:not(:disabled)').forEach(b => {
       b.dataset.busyTitle = b.title; b.title = 'Saving and refreshing. Please wait.';
       b.dataset.workflowBusy = 'true'; b.disabled = true;
     });
