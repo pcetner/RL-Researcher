@@ -37,6 +37,11 @@ def reported(project):
 
 
 def _post(config, path, payload, runs=None):
+    if path == "/api/decide":
+        from rl_researcher.workflow_store import digest
+        code, data = serve.api(config, "GET", "/api/run/" + payload.get("run", ""))
+        payload = {**payload, "evidence_revision": data.get("evidence_revision", "")}
+        payload["operation_id"] = digest(payload)
     return serve.api(config, "POST", path, payload, runs=runs if runs is not None else {})
 
 

@@ -179,3 +179,8 @@ body { font-size:15px }
  .run-header .workspace-head { padding:10px 16px 0 } .run-header h1 { font-size:18px }
  .document-drawer { width:100vw } .home-row { flex-direction:row; flex-wrap:wrap } .home-row > div { flex-basis:75% }
 }
+
+.workflow-row { border-bottom: 1px solid var(--line, #ddd); padding: 1rem 0; }
+.workflow-row form { max-width: 42rem; margin-top: .6rem; }
+.workflow-row textarea { display:block; width:100%; min-height:4rem; }
+.review-card { padding:1rem; border-bottom:1px solid var(--line, #ddd); }

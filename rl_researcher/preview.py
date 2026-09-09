@@ -81,6 +81,18 @@ class Snapshot:
                                            "options": options(body), "finished": finished.isoformat() if finished else ""})
         self.state["findings"].sort(key=lambda r: r["date"], reverse=True)
         self.state["findings"] = self.state["findings"][:3]
+        from rl_researcher.evidence import acknowledgement
+        self.state["catalog"] = []
+        for name, data in self.runs.items():
+            acknowledgement_only = bool(data["options"]) and all(acknowledgement(c) for c in data["options"])
+            data["options"] = [c for c in data["options"] if not acknowledgement(c)]
+            data["decision_required"] = not acknowledgement_only
+            self.state["catalog"].append({"id": data["spec"], "run": name, "spec": data["spec"],
+                "valid": True, "state": data["state"], "review_required": True,
+                "decision_pending": not acknowledgement_only, "reviews": [], "decisions": []})
+        self.state["on_hold"] = [dict(q) for q in self.state["queued"] if q.get("hold")]
+        self.state["queue_revision"] = "snapshot"
+
 
     def api(self, path: str) -> tuple[int, dict[str, Any]]:
         parsed = urlparse(path)

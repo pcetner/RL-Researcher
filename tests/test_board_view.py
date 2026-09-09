@@ -11,7 +11,6 @@ from rl_researcher import report, run, serve
 from rl_researcher.artefacts.overview import research_summary
 from rl_researcher.artefacts.run_report import outcome
 from rl_researcher.artefacts.state import build_state
-from rl_researcher.board_view import revision
 from rl_researcher.config import kind_for, load_config
 from rl_researcher.ledger import open_ledger
 from rl_researcher.regions import body_of, set_region
@@ -45,9 +44,11 @@ def view(config):
 
 
 def decide(config, data, **extra):
-    return serve.api(config, "POST", "/api/decide", {
-        "run": RUN, "selected": [1], "note": "Test fixture: improve the fit.",
-        "revision": data["revision"], **extra}, runs={})
+    from rl_researcher.workflow_store import digest
+    payload = {"run": RUN, "selected": [1], "note": "Test fixture: improve the fit.",
+               "revision": data["revision"], "evidence_revision": data["evidence_revision"], **extra}
+    payload["operation_id"] = digest(payload)
+    return serve.api(config, "POST", "/api/decide", payload, runs={})
 
 
 def test_light_view_uses_report_outcome_without_embedding_images(board_project):
@@ -83,7 +84,7 @@ def test_selected_choice_and_reason_record_once_and_preserve_other_regions(board
     assert code == 200, result
     after = md.read_text(encoding="utf-8")
     assert body_of(before, "authored", "reading") == body_of(after, "authored", "reading")
-    assert "- [x] **iterate**" in after
+    assert after == before, "decision events preserve authored report content"
     assert decide(config, data)[0] == 200, "a retry with the old revision returns the same decision"
     rows = open_ledger(config).query(kind="decision", run=RUN)
     assert len(rows) == 1 and rows[0].note == "Test fixture: improve the fit."
@@ -125,20 +126,16 @@ def test_external_edit_conflicts_without_overwriting_it(board_project):
     assert code == 409 and result["conflict"]
 
 
-def test_saved_choice_stays_waiting_when_recording_fails_and_retry_recovers(board_project, monkeypatch):
+def test_failed_decision_write_stays_waiting_and_retry_recovers(board_project, monkeypatch):
     config, out = board_project
-    original = serve.record
-
-    def fail(*args, **kwargs):
-        raise OSError("Disk unavailable")
-
-    monkeypatch.setattr(serve, "record", fail)
-    code, result = decide(config, view(config))
-    assert code == 500 and "Selection saved" in result["error"]
-    assert result["revision"] == revision((out / "README.md").read_text(encoding="utf-8"))
+    from rl_researcher.ledger import Ledger
+    original = Ledger.add
+    data = view(config)
+    monkeypatch.setattr(Ledger, "add", lambda *a: (_ for _ in ()).throw(OSError("disk unavailable")))
+    assert decide(config, data)[0] == 500
     assert build_state(config).waiting
-    monkeypatch.setattr(serve, "record", original)
-    assert decide(config, result)[0] == 200
+    monkeypatch.setattr(Ledger, "add", original)
+    assert decide(config, data)[0] == 200
     assert len(open_ledger(config).query(kind="decision")) == 1
 
 
@@ -151,15 +148,15 @@ def test_two_conflicting_submissions_do_not_record_different_choices(board_proje
     assert len(open_ledger(config).query(kind="decision")) == 1
 
 
-def test_report_state_failure_after_append_can_be_retried_without_duplicate(board_project, monkeypatch):
+def test_receipt_failure_after_append_can_be_retried_without_duplicate(board_project, monkeypatch):
     config, _out = board_project
-    from rl_researcher import decide as decision_module
-    original = decision_module.write_state
-    monkeypatch.setattr(decision_module, "write_state", lambda *a, **kw: (_ for _ in ()).throw(OSError("state failed")))
-    code, result = decide(config, view(config))
-    assert code == 500
-    monkeypatch.setattr(decision_module, "write_state", original)
-    assert decide(config, result)[0] == 200
+    from rl_researcher import workflow
+    original = workflow.finish
+    data = view(config)
+    monkeypatch.setattr(workflow, "finish", lambda *a: (_ for _ in ()).throw(OSError("receipt failed")))
+    assert decide(config, data)[0] == 500
+    monkeypatch.setattr(workflow, "finish", original)
+    assert decide(config, data)[0] == 200
     assert len(open_ledger(config).query(kind="decision")) == 1
 
 
@@ -270,7 +267,9 @@ def test_recorded_decision_rows_without_choices_remain_readable(board_project):
                              "commit": str(summary.get("git_sha", ""))[:12]})
     assert row.choices == []
     open_ledger(config).add(row)
-    assert view(config)["decision"]["note"] == "Old decision."
+    assert view(config)["decision"] is None
+    assert view(config)["decisions"][0]["note"] == "Old decision."
+    assert view(config)["decisions"][0]["applicability"] == "Evidence revision unknown"
 
 
 def test_live_overview_bounds_trends_without_repeating_the_unit_table():

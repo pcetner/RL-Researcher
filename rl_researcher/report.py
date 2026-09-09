@@ -36,14 +36,27 @@ def main(argv=None) -> int:
     a = p.parse_args(argv)
     config, kind, spec, out = load_all(a.spec, a.out)
 
-    summary_path = out / "results.json"
-    if not summary_path.is_file():
-        print(f"no results.json in {out}: this run has not finished, so there is nothing to "
-              f"report. `status {spec.name}` says where it stands.")
-        return 1
-    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    from rl_researcher.workflow_store import exclusive
+    from rl_researcher.workflow import active
+    with exclusive(config):
+        if active(config, spec, out):
+            print("Execution is active or starting. Wait before regenerating its report.")
+            return 1
+        return _write(config, kind, spec, out, a.no_ledger)
 
-    ledger = None if a.no_ledger else open_ledger(config)
+
+def _write(config, kind, spec, out, no_ledger):
+    summary_path = out / "results.json"
+    if summary_path.is_file():
+        summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    else:
+        from rl_researcher.evidence import read_evidence
+        summary = read_evidence(spec, kind, out)["summary"]
+        if not summary:
+            print(f"no results.json in {out}: no usable summary is available. Open the evidence or run status.")
+            return 1
+
+    ledger = None if no_ledger else open_ledger(config)
     before = len(ledger.rows) if ledger is not None else 0
     # Which document this run gets is the kind's to say, and the dispatch is shared with the
     # watcher so the two cannot disagree about it.

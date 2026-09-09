@@ -201,6 +201,12 @@ def _first_seen(was: "Seen", row: "Seen", clock: Callable[[], float]) -> float:
 
 
 def act(config: Config, change: Change, *, dry_run: bool = False) -> List[str]:
+    from rl_researcher.workflow_store import exclusive
+    with exclusive(config):
+        return _act_unlocked(config, change, dry_run=dry_run)
+
+
+def _act_unlocked(config: Config, change: Change, *, dry_run: bool = False) -> List[str]:
     """What a person would do about this change, done. Only ``finished`` has an action.
 
     A failure, a silence and an overrun are all things to be told about and none of them are
@@ -224,6 +230,9 @@ def act(config: Config, change: Change, *, dry_run: bool = False) -> List[str]:
     kind = kind_for(spec_path, config)
     spec = kind.load(spec_path)
     out = out_dir_for(spec, config)
+    from rl_researcher.workflow import active
+    if active(config, spec, out):
+        return ["Report deferred: execution is active or starting."]
     summary = json.loads((out / "results.json").read_text(encoding="utf-8"))
     ledger = open_ledger(config)
     before = len(ledger.rows)

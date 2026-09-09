@@ -231,3 +231,6 @@ MIT.
 
 Bundled Source Sans 3 fonts are by Adobe and licensed under the SIL Open Font License;
 see `rl_researcher/ui/fonts/LICENSE.md`.
+
+The [research workflow guide](docs/research-workflows.md) describes explicit queue membership,
+hold release, evidence acknowledgement, revision-bound decisions, and retry contracts.

@@ -12,6 +12,7 @@ adds its figures to it.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import time
 import traceback
@@ -148,6 +149,11 @@ def run(
     :func:`rl_researcher.gate.enforce`.
     """
     out = Path(out)
+    if config is not None:
+        from rl_researcher.research_queue import hold
+        reason = hold(config, spec.name)
+        if reason:
+            raise Refused("Research hold: " + reason)
     out.mkdir(parents=True, exist_ok=True)
     max_steps = max_steps or spec.budget.max_steps
     max_seconds = max_seconds if max_seconds is not None else spec.budget.max_seconds
@@ -171,6 +177,19 @@ def run(
     page: PageWriter = _no_page
     started = time.time()
     try:
+        if config is not None:
+            from rl_researcher.workflow_store import exclusive, clear_launch, pending, read, launch_path
+            with exclusive(config):
+                reason = hold(config, spec.name)
+                if reason:
+                    raise Refused("Research hold: " + reason)
+                reservation = read(launch_path(config), {}).get(spec.name, {})
+                if pending(config, spec.name) and reservation.get("pid") != os.getpid():
+                    raise Refused("A launch is already pending for this run.")
+                lock = acquire_lock(out, spec.name, log)
+                clear_launch(config, spec.name)
+        else:
+            lock = acquire_lock(out, spec.name, log)
         if gate is not None:
             gate(spec, kind, out, max_steps=max_steps, max_seconds=max_seconds, config=config, device=device)
         else:
@@ -178,7 +197,6 @@ def run(
             # same numbers on disk as one that was cleared, and the log is the only place that
             # can say which happened. The library default is no gate, so this is honest there too.
             log("no cost gate was applied to this run (--no-gate, or a caller that passed none)")
-        lock = acquire_lock(out, spec.name, log)
         install_stop_handler()
         try:
             page = page_writer(spec, kind, out, log)
