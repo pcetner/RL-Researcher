@@ -9,7 +9,6 @@ from typing import Any, Dict
 
 from rl_researcher.artefacts.dashboard import collect, section, sections_of
 from rl_researcher.artefacts.overview import research_summary
-from rl_researcher.ledger import open_ledger
 from rl_researcher.render import editable_article
 from rl_researcher.units import LIVE_STATUSES, STALE_FACTOR
 
@@ -29,14 +28,12 @@ def overview(config: Any, spec: Any, kind: Any, out: Path, text: str) -> Dict[st
     except (AttributeError, KeyError, TypeError, ValueError):
         research = {"headline": "Open Results for this run's findings.",
                     "provisional": provisional, "rows": [], "markdown": ""}
-    decisions = open_ledger(config).query(kind="decision", run=spec.name)
-    fingerprint = str(summary.get("fingerprint", ""))
-    decisions = [r for r in decisions if r.fingerprint == fingerprint
-                 and r.commit == str(summary.get("git_sha", ""))[:12]]
     alerts = [{"unit": u.unit, "message": u.error or "Heartbeat is stale."}
               for u in data.units if u.failed or u.stale]
     alerts += [{"unit": unit, "message": "Incomplete result."} for unit in incomplete]
     from rl_researcher.presentation import hypothesis_view
+    from rl_researcher.workflow import view as workflow_view
+    workflow = workflow_view(config, spec, kind, out, status=data.status)
     return {**hypothesis_view(config.root, spec.name, getattr(spec, "hypothesis", "")),
             "question": getattr(spec, "hypothesis", ""), "revision": revision(text),
             "state": data.status.state, "done": data.status.done, "total": len(data.units),
@@ -44,11 +41,8 @@ def overview(config: Any, spec: Any, kind: Any, out: Path, text: str) -> Dict[st
             "progress": {"done": data.done_steps, "total": data.total_steps,
                          "eta_seconds": data.eta_all, "heartbeat_seconds": data.heartbeat,
                          "compute_seconds": data.elapsed_all},
-            "decision": ({"id": decisions[-1].id, "note": decisions[-1].note,
-                          "choices": decisions[-1].choices}
-                         if decisions else None),
             "resumable": any(u.resumable and not u.done for u in data.units),
-            "recovery": recovery(data.units, kind=kind, spec=spec, out=out)}
+            "recovery": recovery(data.units, kind=kind, spec=spec, out=out), **workflow}
 
 
 def recovery(units: Any, *, kind: Any = None, spec: Any = None, out: Any = None) -> Dict[str, Any]:

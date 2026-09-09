@@ -276,6 +276,22 @@ class BaseKind(Generic[SpecT]):
     def run_unit(self, spec: SpecT, unit: str, prepared: Any, ctx: UnitContext) -> UnitResult:
         raise NotImplementedError
 
+    def decision_policy(self, spec: SpecT) -> Optional[Dict[str, Any]]:
+        """Optional explicit policy: decision_required, choices, explanation.
+
+        None uses specification metadata, legacy Reviewed compatibility, then the
+        framework experiment/measurement default. Choices do not imply a requirement.
+        """
+        return None
+
+    def historical_evidence(self, spec: SpecT, out: Path) -> Optional[Dict[str, Any]]:
+        """Optional aggregate-only evidence: completion, summary, sources, explanation.
+
+        Sources are files inside out. Completion is complete, incomplete, or unknown.
+        This hook is never used over standard execution evidence or a run lock.
+        """
+        return None
+
     def read_result(self, result: Dict[str, Any]) -> Dict[str, Any]:
         """One unit's ``results.json`` in the framework's shape.
 

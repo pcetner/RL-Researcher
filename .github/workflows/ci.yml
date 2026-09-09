@@ -29,3 +29,22 @@ jobs:
         run: mypy rl_researcher
       - name: Tests (includes the toy kind end to end)
         run: pytest -q
+
+  workflows:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -e ".[dev,browser]"
+      - run: python -m playwright install --with-deps chromium
+      - name: Workflow persistence and OS locking
+        run: pytest tests/test_workflows.py -q
+      - name: Real HTTP browser workflows
+        env:
+          RL_BROWSER_TESTS: "1"
+        run: pytest tests/test_browser_workflows.py -q

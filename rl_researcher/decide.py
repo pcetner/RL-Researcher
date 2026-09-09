@@ -18,7 +18,6 @@ worded once and reaches both callers identically.
 
 from __future__ import annotations
 
-import json
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -26,8 +25,6 @@ from typing import Any, List
 
 from rl_researcher.artefacts.state import _decision_region, options, ticked, write_state
 from rl_researcher.cli import console, load_all, spec_parser
-from rl_researcher.ledger import Finding, open_ledger
-from rl_researcher.units import stamp_now
 
 
 @dataclass(frozen=True)
@@ -47,54 +44,41 @@ class Decision:
     state: str = ""
 
 
-def record(config: Any, spec: Any, out: Path, *, note: str = "", via: str = "cli") -> Decision:
-    """Read the ticked box, write the ledger row, refresh the state page.
-
-    ``via`` says how the decision reached here. It is provenance for an audit and nothing reads
-    it to decide anything: a row recorded from the dashboard is otherwise identical to one typed
-    at a terminal, down to the commit and the fingerprint, both of which come from the run's own
-    ``results.json`` rather than from whoever is asking.
-    """
-    out = Path(out)
-    artefact = out / "README.md"
-    body = _decision_region(artefact)
-    if body is None:
-        return Decision(1, f"{artefact} has no decision region; nothing to record. "
-                            f"(Has the run finished and written its report?)")
+def record(config: Any, spec: Any, out: Path, *, note: str = "", via: str = "cli",
+           evidence_revision: str = "", operation_id: str = "") -> Decision:
+    from rl_researcher.workflow import submit, resolve
+    from rl_researcher.workflow_store import WorkflowError, digest
+    from rl_researcher.evidence import acknowledgement, read_evidence
+    body = _decision_region(Path(out) / "README.md")
     chose = ticked(body)
-    offered = options(body)
     if not chose:
-        return Decision(1, f"no box is ticked in the decision region of {artefact}.\n"
-                            f"  options: {', '.join(offered) or '(the stub lists none)'}\n"
-                            f"  tick one, then run this again. A decision has to be made by a "
-                            f"person.", options=offered)
-
-    summary_path = out / "results.json"
-    summary = json.loads(summary_path.read_text(encoding="utf-8")) if summary_path.is_file() else {}
-    ledger = open_ledger(config)
-    row = ledger.add(Finding(
-        kind="decision", run=spec.name, date=stamp_now()[:10],
-        note=note or "; ".join(chose),
-        choices=list(chose),
-        commit=str(summary.get("git_sha", ""))[:12],
-        fingerprint=str(summary.get("fingerprint", "")),
-        artefact=_rel(config.root, artefact),
-        via=via,
-        touches=list(getattr(spec, "decision_touches", []) or []),
-    ))
-    state = write_state(config, ledger=ledger)
-    return Decision(0, f"{spec.name}: decided — {'; '.join(chose)}  [{row.id}]",
-                    chose=chose, options=offered, finding=row.id, state=str(state))
+        return Decision(1, "no box is ticked. Options: " + ", ".join(options(body)), options=options(body))
+    if all(acknowledgement(c) for c in chose) and not evidence_revision:
+        kind, current, _ = resolve(config, spec.name)
+        evidence_revision = read_evidence(current, kind, Path(out))["revision"]
+    if not evidence_revision:
+        return Decision(1, "An evidence revision is required. Read /api/run/<name> and pass --evidence-revision.")
+    payload = {"run": spec.name, "choices": chose, "note": note, "via": via,
+               "evidence_revision": evidence_revision}
+    payload["operation_id"] = operation_id or digest(payload)
+    try:
+        receipt = submit(config, "decide", payload)
+        state = write_state(config)
+        return Decision(0, receipt["message"] + " " + ", ".join(chose), chose=chose, finding=receipt.get("finding", ""), state=str(state))
+    except WorkflowError as exc:
+        return Decision(1, str(exc), options=options(body))
 
 
 def main(argv=None) -> int:
     console()
     p = spec_parser(__doc__.split("\n\n")[0])
     p.add_argument("--note", default="", help="the reasoning, in the human's words")
+    p.add_argument("--evidence-revision", default="", help="revision of the evidence you considered")
+    p.add_argument("--operation-id", default="", help="stable request ID for retries")
     a = p.parse_args(argv)
     config, kind, spec, out = load_all(a.spec, a.out)
 
-    decision = record(config, spec, out, note=a.note)
+    decision = record(config, spec, out, note=a.note, evidence_revision=a.evidence_revision, operation_id=a.operation_id)
     print(decision.message)
     if decision.state:
         print(f"state -> {decision.state}")
