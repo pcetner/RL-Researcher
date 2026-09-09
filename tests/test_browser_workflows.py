@@ -187,10 +187,21 @@ def test_review_leaves_decision_pending_and_new_evidence_requires_reconsideratio
     assert run.main(["toy-line-fit", "--max-seconds", "5"]) == 0
     assert report.main(["toy-line-fit"]) == 0
     page.goto(url + "/#run=toy-line-fit&view=overview")
+    page.evaluate("""() => {
+        const original = window.fetch;
+        const gate = new Promise(resolve => { window.releaseReviewRefresh = resolve; });
+        window.fetch = async (...args) => {
+            if (args[0] === '/api/state') await gate;
+            return original(...args);
+        };
+    }""")
     page.get_by_role("button", name="Mark reviewed", exact=True).click()
     expect(page.locator(".review-card")).to_contain_text("Reviewed ·")
     expect(page.locator("#decision-form")).to_be_visible()
     page.locator("#reason").fill("The evidence supports this research direction")
+    expect(page.locator('[data-choice="0"]')).to_be_disabled()
+    page.evaluate("() => window.releaseReviewRefresh()")
+    expect(page.locator('[data-choice="0"]')).to_be_enabled()
     page.locator('[data-choice="0"]').click()
     expect(page.locator("#form-slot")).to_contain_text("Decision recorded")
     summary = config.out_root("toy") / "toy-line-fit" / "results.json"
