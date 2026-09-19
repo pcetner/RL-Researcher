@@ -1,139 +1,178 @@
-"""One run per output directory.
-
-Two runs sharing an output directory do not conflict loudly: they skip each other's finished
-units, resume each other's checkpoints, and write the same summary twice. The numbers can even
-agree, which is worse, because nothing says the run happened twice. A live lock is therefore a
-refusal; a lock whose process is gone (a kill, a shutdown) is stale and gets taken over, which
-is exactly the hot-start case.
-"""
-
-from __future__ import annotations
-
-import json
+import contextlib
 import os
-import platform
+import signal
 import subprocess
-import time
 from pathlib import Path
-from typing import Callable, Dict, Optional
-
-from rl_researcher import atomic
-from rl_researcher.units import read_json, stamp_now
-
-LOCK_NAME = ".study-lock.json"  # the name Auto-SM64's runs already use; kept so nothing renames
 
 
-class RunLocked(RuntimeError):
+class LockBusy(BlockingIOError):
     pass
 
 
-def process_alive(pid: int) -> bool:
-    """Whether ``pid`` is running on this machine.
-
-    Not ``os.kill(pid, 0)``: on Windows CPython implements ``os.kill`` with
-    ``TerminateProcess``, so the usual liveness probe would kill the very process it is
-    asking about.
-    """
+def linux_process_identity(pid):
+    """Start ticks distinguish a retained execution PID from a later reused PID."""
     try:
-        if platform.system() == "Windows":
-            out = subprocess.run(["tasklist", "/FI", f"PID eq {int(pid)}", "/NH"],
-                                 capture_output=True, text=True, timeout=10).stdout
-            return str(int(pid)) in out
-        os.kill(int(pid), 0)
-        return True
-    except (OSError, ValueError, subprocess.SubprocessError):
-        return False
-
-
-def _claim(path: Path, run: str) -> bool:
-    """Create the lock file, or say it was already there. The create is the claim.
-
-    ``O_CREAT | O_EXCL`` is what makes two starts a second apart resolve rather than both
-    succeed: reading first and writing after leaves a window in which neither sees the other,
-    and the loser of that race is a directory with two runs writing into it, which is the one
-    failure this file exists to prevent.
-    """
-    payload = json.dumps({"pid": os.getpid(), "host": platform.node(), "run": run,
-                          "started": stamp_now()}, indent=2)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        fd = os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-    except FileExistsError:
-        return False
-    with os.fdopen(fd, "w", encoding="utf-8") as fh:
-        fh.write(payload)
-    return True
-
-
-def _settled(path: Path, attempts: int = 40, delay: float = 0.025) -> Optional[Dict]:
-    """The lock's contents, waiting out the instant between its creation and its payload.
-
-    ``_claim`` creates the file and writes into it, so there is a window in which the loser of
-    a race reads an empty file. Treating that as an unreadable lock and taking it over hands
-    the directory to two processes -- which is the thing the exclusive create was added to
-    stop, arrived at from the other side. A genuinely corrupt lock stays unreadable and is
-    taken over a second later; a racing one resolves in microseconds.
-    """
-    for _ in range(attempts):
-        held = read_json(path)
-        if held is not None and held.get("pid") is not None:
-            return held
-        time.sleep(delay)
-    return read_json(path)
-
-
-def acquire_lock(out: Path, run: str, log: Callable[[str], None]) -> Path:
-    """Claim ``out`` for this process, or raise :class:`RunLocked`."""
-    path = Path(out) / LOCK_NAME
-    if _claim(path, run):
-        return path
-    held = _settled(path)
-    if held is not None:
-        pid, host = held.get("pid"), held.get("host")
-        if pid is not None and host == platform.node() and process_alive(int(pid)):
-            raise RunLocked(
-                f"run {run} is already running in {out} as pid {pid} (started "
-                f"{held.get('started', '?')}). Two runs on one output directory overwrite each "
-                f"other's units. Wait for it, or stop it and re-run to continue from its "
-                f"checkpoints. If you are sure it is gone, delete {path}.")
-        if host is not None and host != platform.node():
-            # Nothing here can ask another machine whether its process is alive, so this is a
-            # guess, and it is the dangerous direction of one: `colab_mirror` exists precisely
-            # to put a run's directory on a shared path. Said loudly rather than in passing.
-            log(f"** taking over a lock held by {host} (pid {pid}, started "
-                f"{held.get('started', '?')}). Liveness cannot be checked across machines. If "
-                f"that run is still going, both will write into {out} **")
-        else:
-            log(f"taking over a stale lock from pid {pid} ({held.get('started', '?')}); "
-                f"that process is no longer running")
-    else:
-        log(f"the lock at {path} could not be read; taking it over")
-    atomic.write_json(path, {"pid": os.getpid(), "host": platform.node(), "run": run,
-                             "started": stamp_now()})
-    return path
-
-
-def release_lock(path: Optional[Path]) -> None:
-    """Drop the lock if this process still owns it."""
-    if path is None or not Path(path).is_file():
-        return
-    held = read_json(Path(path))
-    if held is not None and held.get("pid") == os.getpid():
-        try:
-            Path(path).unlink()
-        except OSError:  # pragma: no cover
-            pass
-
-
-def lock_holder(out: Path) -> Optional[Dict]:
-    """Who holds this output directory, and whether that process still exists: the lock
-    contents plus ``alive`` (``None`` when the lock was written on another machine)."""
-    path = Path(out) / LOCK_NAME
-    held = read_json(path) if path.is_file() else None
-    if held is None:
+        fields = Path(f'/proc/{int(pid)}/stat').read_text().split(') ')[1].split()
+        return {'state':fields[0], 'start_ticks':fields[19]}
+    except FileNotFoundError:
         return None
-    if held.get("host") != platform.node():
-        held["alive"] = None
-    else:
-        held["alive"] = process_alive(int(held.get("pid", -1)))
-    return held
+
+
+@contextlib.contextmanager
+def exclusive(path):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a+b") as f:
+        f.seek(0)
+        f.write(b"0")
+        f.flush()
+        f.seek(0)
+        if os.name == "nt":
+            import msvcrt
+
+            try:
+                msvcrt.locking(f.fileno(), msvcrt.LK_NBLCK, 1)
+            except OSError as error:
+                raise LockBusy(str(error)) from error
+        else:
+            import fcntl
+
+            try:
+                fcntl.flock(f.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError as error:
+                raise LockBusy(str(error)) from error
+        try:
+            yield
+        finally:
+            f.seek(0)
+            if os.name == "nt":
+                msvcrt.locking(f.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+
+
+def spawn(args, **kwargs):
+    options = (
+        {"creationflags": subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP}
+        if os.name == "nt"
+        else {"start_new_session": True}
+    )
+    return subprocess.Popen(args, **options, **kwargs)
+
+
+class OwnedProcess:
+    """An OS job/process group captures descendants; never kill by executable name."""
+
+    def __init__(self, proc):
+        self.proc, self.job = proc, None
+        if os.name == "nt":
+            import ctypes
+            from ctypes import wintypes
+
+            self.kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+            self.kernel.CreateJobObjectW.restype = wintypes.HANDLE
+            self.kernel.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
+            self.kernel.TerminateJobObject.argtypes = [wintypes.HANDLE, wintypes.UINT]
+            self.kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+            self.job = self.kernel.CreateJobObjectW(None, None)
+
+            class Basic(ctypes.Structure):
+                _fields_ = [
+                    ("process_time", ctypes.c_int64),
+                    ("job_time", ctypes.c_int64),
+                    ("flags", wintypes.DWORD),
+                    ("min_ws", ctypes.c_size_t),
+                    ("max_ws", ctypes.c_size_t),
+                    ("active", wintypes.DWORD),
+                    ("affinity", ctypes.c_size_t),
+                    ("priority", wintypes.DWORD),
+                    ("scheduling", wintypes.DWORD),
+                ]
+
+            class Extended(ctypes.Structure):
+                _fields_ = [
+                    ("basic", Basic),
+                    ("io", ctypes.c_uint64 * 6),
+                    ("process_memory", ctypes.c_size_t),
+                    ("job_memory", ctypes.c_size_t),
+                    ("peak_process", ctypes.c_size_t),
+                    ("peak_job", ctypes.c_size_t),
+                ]
+
+            info = Extended()
+            info.basic.flags = 0x2000  # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+            self.kernel.SetInformationJobObject.argtypes = [
+                wintypes.HANDLE,
+                ctypes.c_int,
+                ctypes.c_void_p,
+                wintypes.DWORD,
+            ]
+            if not self.kernel.SetInformationJobObject(
+                self.job, 9, ctypes.byref(info), ctypes.sizeof(info)
+            ):
+                proc.kill()
+                raise OSError(
+                    ctypes.get_last_error(), "Cannot establish crash-safe process ownership"
+                )
+            if not self.job or not self.kernel.AssignProcessToJobObject(
+                self.job, int(proc._handle)
+            ):
+                proc.kill()
+                raise OSError(ctypes.get_last_error(), "Cannot establish worker process ownership")
+
+    def kill(self):
+        if self.job:
+            # Some packaged Windows interpreters allow native descendants to break
+            # away from inherited jobs. Capture only this still-owned process tree.
+            import ctypes
+            from ctypes import wintypes
+
+            class Entry(ctypes.Structure):
+                _fields_ = [
+                    ("size", wintypes.DWORD),
+                    ("usage", wintypes.DWORD),
+                    ("pid", wintypes.DWORD),
+                    ("heap", ctypes.c_size_t),
+                    ("module", wintypes.DWORD),
+                    ("threads", wintypes.DWORD),
+                    ("parent", wintypes.DWORD),
+                    ("priority", wintypes.LONG),
+                    ("flags", wintypes.DWORD),
+                    ("exe", wintypes.WCHAR * 260),
+                ]
+
+            k = self.kernel
+            k.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+            k.Process32FirstW.argtypes = [wintypes.HANDLE, ctypes.POINTER(Entry)]
+            k.Process32NextW.argtypes = [wintypes.HANDLE, ctypes.POINTER(Entry)]
+            k.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+            k.OpenProcess.restype = wintypes.HANDLE
+            k.TerminateProcess.argtypes = [wintypes.HANDLE, wintypes.UINT]
+            snapshot = k.CreateToolhelp32Snapshot(2, 0)
+            entries = []
+            entry = Entry()
+            entry.size = ctypes.sizeof(entry)
+            more = k.Process32FirstW(snapshot, ctypes.byref(entry))
+            while more:
+                entries.append((entry.pid, entry.parent))
+                more = k.Process32NextW(snapshot, ctypes.byref(entry))
+            k.CloseHandle(snapshot)
+            owned = {self.proc.pid}
+            for _ in entries:
+                prior = len(owned)
+                owned.update(pid for pid, parent in entries if parent in owned)
+                if len(owned) == prior:
+                    break
+            handles = [k.OpenProcess(1, False, pid) for pid in owned if pid != self.proc.pid]
+            k.TerminateJobObject(self.job, 1)
+            for handle in handles:
+                if handle:
+                    k.TerminateProcess(handle, 1)
+                    k.CloseHandle(handle)
+        elif self.proc.poll() is None:
+            os.killpg(self.proc.pid, signal.SIGKILL)
+
+    def close(self):
+        self.kill()  # also reap any descendants left after the worker exits
+        if self.job:
+            self.kernel.CloseHandle(self.job)

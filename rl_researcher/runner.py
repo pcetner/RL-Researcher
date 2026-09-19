@@ -1,376 +1,400 @@
-"""The run loop every kind shares.
+"""Detached supervisor: the only event-journal writer and owner of a sequential worker."""
 
-``run`` takes the lock, opens the flushed log, refuses over the gate, asks the kind's guards,
-prepares once, then runs each unit that has no result yet: a unit directory, a heartbeat, a
-result written atomically, the checkpoint cleared once the result is the proof. It is idempotent
-and hot-restartable: run the same command again and finished units are skipped, a checkpointed
-unit continues (the kind's ``run_unit`` decides how), and a unit that raises is marked failed
-where the status command looks. The summary is written to ``<out>/results.json`` and the kind
-adds its figures to it.
-"""
-
-from __future__ import annotations
-
-import json
 import os
+import math
 import subprocess
+import queue
+import sys
+import threading
 import time
-import traceback
+import uuid
+from multiprocessing.connection import Listener
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
-
-from rl_researcher import atomic
-from rl_researcher.checkpoint import clear_checkpoint
-from rl_researcher.gate import GateRefused
-from rl_researcher.kinds import DeviceInfo, RunContext, RunKind, UnitContext
-from rl_researcher.lock import acquire_lock, release_lock
-from rl_researcher.runlog import Log, open_run_log
-from rl_researcher.spec import RunSpec, spec_fingerprint
-from rl_researcher.stop import install_stop_handler
-from rl_researcher.units import (PROGRESS_NAME, RESULTS_NAME, mark_failed, parse_unit, read_json,
-                                 stamp_now, thin, unit_dir, write_progress)
-
-PageWriter = Callable[..., None]
-PageWriterFactory = Callable[[RunSpec, RunKind, Path, Log], PageWriter]
+from . import atomic, channel, checkpoint, config, evidence, experiment, lock, resources, runlog
+from .units import ACTIVE
 
 
-class Refused(RuntimeError):
-    """The run did not start, and nothing is wrong with it.
-
-    A guard that is blocked and a check that returned an error are the same event to whoever
-    launched the run: it was asked whether to start, and the answer was no. Neither is a
-    failure, so neither is logged as one — a traceback here reads as a crash and buries the
-    sentence the human has to act on.
-    """
+def state(directory):
+    return runlog.project(atomic.read_json(directory / "manifest.json"), runlog.events(directory))
 
 
-class GuardBlocked(Refused):
-    pass
+def launch(directory):
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(directory / "source" / "toolkit")
+    for name in ("stop-request.json", "force-request.json"):
+        (directory / name).unlink(missing_ok=True)
+    with (directory / "supervisor.log").open("ab") as log:
+        process = lock.spawn(
+            [sys.executable, "-m", "rl_researcher.runner", str(directory)],
+            cwd=directory,
+            env=env,
+            stdout=log,
+            stderr=log,
+        )
+    atomic.write_json(directory / "supervisor.json", {"pid": process.pid, "started": time.time()})
+    return process
 
 
-class CheckFailed(Refused):
-    pass
-
-
-def git_sha(cwd: Optional[Path] = None) -> str:
-    """The code a result was produced with. ``cwd`` chooses whose repository is asked; the
-    default is the working directory, which is the consuming project."""
-    try:
-        return subprocess.check_output(["git", "rev-parse", "HEAD"], text=True, timeout=5,
-                                       cwd=None if cwd is None else str(cwd),
-                                       stderr=subprocess.DEVNULL).strip()
-    except (OSError, subprocess.SubprocessError):
-        return "unknown"
-
-
-def framework_stamp() -> str:
-    """Which version of *this package* computed a number.
-
-    ``git_sha`` records the consuming project, which is the other half. The README's argument
-    for pinning a commit is that a finished run cannot be reproduced from the two repositories
-    alone if the dependency can move underneath it — and until this existed, nothing on disk
-    said which version of the dependency had been underneath it.
-
-    A wheel has no repository to ask, so it is the version alone; a checkout adds the commit,
-    which is what the framework is actually run from while it is being built.
-    """
-    from rl_researcher import __version__
-
-    sha = git_sha(Path(__file__).resolve().parent)
-    return f"{__version__}+g{sha[:8]}" if sha != "unknown" else __version__
-
-
-def _no_page(*_a: Any, **_k: Any) -> None:
-    return None
-
-
-def _no_page_factory(spec: RunSpec, kind: RunKind, out: Path, log: Log) -> PageWriter:
-    return _no_page
-
-
-def _run_checks(kind: RunKind, spec: RunSpec, config: Any, log: Log, skip: bool,
-                out: Optional[Path] = None) -> None:
-    """Ask the kind what it knows before the first unit, and refuse on anything at error level.
-
-    This runs before ``prepare``, so a refusal costs nothing: no model is loaded, no engine has
-    booted, no unit directory exists. The alternative the kinds were writing before this existed
-    was a raise inside ``run_unit``, which discovers halfway through the second unit that the
-    data was wrong and throws away everything in front of it.
-
-    ``out`` reaches the ``run``-stage checks, whose question is about this machine now rather
-    than about the registration.
-    """
-    from rl_researcher.findings import collect, errors
-
-    findings = collect(kind, spec, config, out)
-    for f in findings:
-        log(f"check [{f.check}] {f.level}: {f.message}")
-    bad = errors(findings)
-    if not bad:
+def validate_authorization(authorization):
+    if authorization is None:
         return
-    if skip:
-        # Said out loud, in the run's own log, because the numbers this run produces were
-        # made against a registration something already objected to.
-        log(f"waived {len(bad)} check error(s) with --no-check; this run's numbers stand on that")
-        return
-    raise CheckFailed(f"{len(bad)} check(s) failed: "
-                      + "; ".join(f"[{f.check}] {f.message}" for f in bad)
-                      + ". Fix them, or pass --no-check to run anyway.")
+    deadline = authorization.get('deadline')
+    if (not isinstance(deadline, (int, float)) or not math.isfinite(deadline)
+            or deadline <= time.time() or not authorization.get('campaign') or not authorization.get('job')):
+        raise ValueError('A current bounded campaign authorization is required')
 
 
-def missing_units(kind: RunKind, spec: RunSpec, out: Path) -> List[str]:
-    return [u for u in kind.units(spec) if not (unit_dir(out, u) / RESULTS_NAME).is_file()]
-
-
-def run(
-    spec: RunSpec,
-    kind: RunKind,
-    out: "str | Path",
-    *,
-    config: Any = None,
-    device: Optional[DeviceInfo] = None,
-    log: Log = print,
-    resume: bool = True,
-    units: Optional[List[str]] = None,
-    max_steps: Optional[int] = None,
-    max_seconds: Optional[float] = None,
-    allow_guards: bool = False,
-    skip_checks: bool = False,
-    page_writer: PageWriterFactory = _no_page_factory,
-    gate: Optional[Callable[..., Any]] = None,
-) -> Dict[str, Any]:
-    """Run every unit of ``spec`` that has no result yet, and write the summary.
-
-    ``units`` names the arms (or unit ids) this machine takes when a run is split across
-    machines; the summary covers whichever units exist and says which are missing.
-    ``page_writer`` builds the dashboard writer that the heartbeat drives; it must never raise
-    into the run. ``gate`` is called before the lock with the spec and the effective budget
-    and raises to refuse; the default is no gate, the framework's is
-    :func:`rl_researcher.gate.enforce`.
-    """
-    out = Path(out)
-    if config is not None:
-        from rl_researcher.research_queue import hold
-        reason = hold(config, spec.name)
-        if reason:
-            raise Refused("Research hold: " + reason)
-    out.mkdir(parents=True, exist_ok=True)
-    max_steps = max_steps or spec.budget.max_steps
-    max_seconds = max_seconds if max_seconds is not None else spec.budget.max_seconds
-    if device is None:
-        # Through the cost module, so the fingerprint the runner records a unit's throughput
-        # under is the one the next estimate looks it up by. Resolving it here as the bare
-        # kind.device() left every run recorded against an empty fingerprint, and every
-        # estimate reading "no record on this device" however many units had finished on it.
-        try:
-            from rl_researcher.cost import probe_device
-
-            device = probe_device(kind, config)
-        except Exception:  # noqa: BLE001 - a cost lookup must never stop a run
-            device = kind.device()
-    fingerprint = spec_fingerprint(spec)
-    log_name = getattr(kind, "log_name", "run.log")
-    log, close_log = open_run_log(out / log_name, log)
-    current: Optional[Path] = None
-    lock: Optional[Path] = None
-    completed = False
-    page: PageWriter = _no_page
-    started = time.time()
-    try:
-        if config is not None:
-            from rl_researcher.workflow_store import exclusive, clear_launch, pending, read, launch_path
-            with exclusive(config):
-                reason = hold(config, spec.name)
-                if reason:
-                    raise Refused("Research hold: " + reason)
-                reservation = read(launch_path(config), {}).get(spec.name, {})
-                if pending(config, spec.name) and reservation.get("pid") != os.getpid():
-                    raise Refused("A launch is already pending for this run.")
-                lock = acquire_lock(out, spec.name, log)
-                clear_launch(config, spec.name)
-        else:
-            lock = acquire_lock(out, spec.name, log)
-        if gate is not None:
-            gate(spec, kind, out, max_steps=max_steps, max_seconds=max_seconds, config=config, device=device)
-        else:
-            # Said out loud for the same reason `--no-check` is: a gate walked past leaves the
-            # same numbers on disk as one that was cleared, and the log is the only place that
-            # can say which happened. The library default is no gate, so this is honest there too.
-            log("no cost gate was applied to this run (--no-gate, or a caller that passed none)")
-        install_stop_handler()
-        try:
-            page = page_writer(spec, kind, out, log)
-        except Exception as exc:  # noqa: BLE001 - a page must never take a run down
-            log(f"dashboard disabled: {type(exc).__name__}: {exc}")
-            page = _no_page
-        page(force=True)
-        for g in kind.guards(spec):
-            if not g.is_blocked():
+def start(root, identifier, revision, request_id, isolation=None, authorization=None):
+    root = Path(root)
+    with lock.exclusive(root / ".research" / "operations.lock"):
+        existing = []
+        for d in config.store(root).iterdir():
+            if not (d / "manifest.json").exists():
                 continue
-            if not allow_guards:
-                raise GuardBlocked(f"{g.name}: {g.message}")
-            # A waived guard is a condition the kind said a run must not start under, started
-            # anyway. It goes in the run's own log beside the numbers it produced.
-            log(f"waived a blocked guard with --allow-guards: {g.name}: {g.message}")
-        _run_checks(kind, spec, config, log, skip_checks, out)
-        all_units = kind.units(spec)
-        selected = list(all_units)
-        if units:
-            wanted = set(units)
-            selected = [u for u in all_units if u in wanted or parse_unit(u)[0] in wanted]
-            unknown = wanted - set(all_units) - {parse_unit(u)[0] for u in all_units}
-            if unknown:
-                raise ValueError(f"unknown units {sorted(unknown)}; the run has {all_units}")
-            log(f"running only {len(selected)} of {len(all_units)} units on this machine")
-        # Preparing is what costs: a snapshot read into memory, a model built, an engine binary
-        # demanded. When every selected unit already has a result there is nothing to prepare
-        # for, and the run is really a request to rebuild the summary from what is on disk —
-        # which must work on a machine that could not have produced it.
-        todo = [u for u in selected
-                if not (resume and (unit_dir(out, u) / RESULTS_NAME).is_file())]
-        previous = read_json(out / RESULTS_NAME) or {} if (out / RESULTS_NAME).is_file() else {}
-        # The commit that produced the units, which is only today's HEAD when a unit ran today.
-        # Rebuilding a summary must not restamp measurements with the commit that re-rendered
-        # them: the ledger's row identity carries the commit, so a restamp writes a second row
-        # claiming the same numbers were measured by code that never ran them.
-        commit = git_sha() if todo else str(previous.get("git_sha") or git_sha())
-        framework = (framework_stamp() if todo
-                     else str(previous.get("rl_researcher") or framework_stamp()))
-        ctx = RunContext(out=out, log=log, device=device, max_steps=max_steps, max_seconds=max_seconds,
-                         config=config, selected=selected, commit=commit, previous=previous,
-                         framework=framework)
-        prepared = None
-        if todo:
-            prepared = kind.prepare(spec, ctx)
-        else:
-            log(f"every unit of {spec.name} already has a result; rebuilding the summary only "
-                f"(provenance kept at {commit[:12]})")
-
-        results: List[Dict[str, Any]] = []
-        for unit in all_units:
-            arm, seed = parse_unit(unit)
-            cell = unit_dir(out, unit)
-            res_path = cell / RESULTS_NAME
-            if unit not in selected:
-                if res_path.is_file():
-                    results.append(kind.read_result(read_json(res_path) or {}))
-                continue
-            cell.mkdir(parents=True, exist_ok=True)
-            if resume and res_path.is_file():
-                # Through the kind, because a result written before the current contract is
-                # still evidence and the kind is the only thing that knows its old shape. Read
-                # raw, a summary of finished units carries no `metrics` at all, and a report
-                # over it prints every registered number as n/a under a cleared-every-bar
-                # headline -- an all-clear made of nothing.
-                results.append(kind.read_result(read_json(res_path) or {}))
-                log(f"[{arm} seed {seed}] already finished; {res_path} kept")
-                continue
-            if not resume:
-                clear_checkpoint(cell)
-            current = cell
-            uctx = UnitContext(unit=unit, arm=arm, seed=seed, cell=cell, progress=cell / PROGRESS_NAME,
-                               log=log, device=device, max_steps=max_steps, max_seconds=max_seconds,
-                               resume=resume, fingerprint=fingerprint, cadence=spec.cadence,
-                               on_beat=lambda: page())
-            uctx.beat("starting", step=0, elapsed_seconds=0.0)
-            t_unit = time.time()
-            r = kind.run_unit(spec, unit, prepared, uctx)
-            d = r.to_dict()
-            d["wall_seconds"] = round(time.time() - t_unit, 1)
-            atomic.write_text(res_path, json.dumps(d, indent=2, default=str))
-            clear_checkpoint(cell)  # the result is the proof; the checkpoint has no further use
-            # The kind's own `extra` fields go into the last heartbeat too, not only into the
-            # result: whoever reads progress.json after a unit finishes (a status command, a
-            # dashboard, a watcher) is reading the same record and should see the same names.
-            beat_fields: Dict[str, Any] = dict(r.extra)
-            beat_fields.update(
-                unit=unit, arm=arm, seed=seed,
-                # The unit's own word for how it ended. This always said "done", so a unit that
-                # hit the time cap before its step budget was recorded as having finished, and
-                # only the result file said otherwise.
-                status="done" if r.status == "complete" else r.status,
-                step=r.steps, max_steps=max_steps,
-                elapsed_seconds=round(r.seconds, 1), result=res_path.relative_to(out).as_posix(),
-                resumed_from_step=r.resumed_from_step,
-                history={k: thin(v) for k, v in r.history.items() if v})
-            write_progress(cell / PROGRESS_NAME, **beat_fields)
-            if config is not None:
-                try:
-                    from rl_researcher.cost import record_throughput
-
-                    record_throughput(config, kind, spec, unit, d, device)
-                except Exception as exc:  # noqa: BLE001 - bookkeeping must never fail a run
-                    log(f"throughput record skipped: {type(exc).__name__}: {exc}")
-            results.append(d)
-            current = None
-            log(f"[{arm} seed {seed}] {r.status} after {r.steps} steps / {r.seconds:.0f}s: "
-                + " ".join(f"{m.name}={r.metrics.get(m.name, float('nan')):.3f}" for m in spec.metrics))
-            page(force=True)
-
-        summary: Dict[str, Any] = {
-            "run": spec.name,
-            "kind": kind.name,
-            "fingerprint": fingerprint,
-            "git_sha": commit,
-            # The project's commit is half the provenance; this is the other half. On a rebuild
-            # it is carried forward with the rest, so a regenerated document attributes the
-            # numbers to the framework that made them rather than the one re-rendering them.
-            "rl_researcher": framework,
-            "device": device.name if device else None,
-            "device_fingerprint": device.fingerprint if device else None,
-            "budget": {"max_steps": max_steps, "max_seconds": max_seconds},
-            "seeds": list(spec.seeds),
-            "runs": results,
-            "missing_units": missing_units(kind, spec, out),
-            "figures": {},
-            # How long the *run* took, which on a rebuild is not how long the rebuild took.
-            "wall_seconds": (round(time.time() - started, 1) if todo
-                             else previous.get("wall_seconds")
-                             or round(sum(float(r.get("seconds") or 0) for r in results), 1)),
-        }
-        if not todo:
-            summary["regenerated"] = stamp_now()
-        summary.update(kind.summarise(spec, results, out, ctx) or {})
-        # Provenance is the framework's to state, not the kind's. A kind that stamps its own
-        # `git_sha` was, on a rebuild, asking git for today's HEAD and winning this merge.
-        if summary.get("git_sha") != commit:
-            log(f"note: {kind.name}.summarise set git_sha to {summary.get('git_sha')}; the "
-                f"run's own provenance ({commit[:12]}) stands")
-        summary["git_sha"] = commit
-        atomic.write_text(out / RESULTS_NAME, json.dumps(summary, indent=2, default=str))
-        log(f"summary -> {out / RESULTS_NAME}" + (f" ({len(summary['missing_units'])} units missing)"
-                                                   if summary["missing_units"] else ""))
-        completed = True
-        return summary
-    except (GateRefused, Refused) as exc:
-        # A refusal is not a failure. It happens before any unit exists, so there is nothing to
-        # mark and nothing to diagnose; a traceback here would read as a crash and bury the one
-        # thing the human has to act on, which is the sentence saying what to fix.
-        for line in str(exc).splitlines():
-            log(line)
-        raise
-    except Exception as exc:
-        # A hot-stop (KeyboardInterrupt / HotStop) is not a failure and is not caught here.
-        log(f"FAILED: {type(exc).__name__}: {exc}")
-        for line in traceback.format_exc().rstrip().splitlines():
-            log(f"  | {line}")
-        if current is not None:
-            mark_failed(current / PROGRESS_NAME, exc)
-            log(f"marked {current / PROGRESS_NAME} failed; `status` exits 2 while it stands")
-        raise
-    finally:
-        # A run that finished will not change again, so its page stops reloading itself; one
-        # that was stopped or failed keeps refreshing, because resuming it will change it.
+            m = atomic.read_json(d / "manifest.json")
+            if m.get("request_id") == request_id:
+                if (m.get("experiment") != identifier or m.get("revision") != revision
+                        or m.get('isolation') != isolation or m.get('authorization') != authorization):
+                    raise ValueError("Request ID already used with different experiment or revision")
+                return d.name
+            existing.append(d)
+        validate_authorization(authorization)
+        resources.preflight(root,isolation)
+        if any(state(d)["state"] in ACTIVE for d in existing):
+            raise ValueError("Another execution is already active")
+        resolved = experiment.inspect(root, identifier)
+        if resolved["revision"] != revision:
+            raise ValueError("Definition changed. Inspect the updated setup and validate again.")
+        validated = root / ".research" / "validation" / (identifier + ".json")
+        if not validated.exists() or atomic.read_json(validated)["revision"] != revision:
+            raise ValueError("Technical validation is required for this revision")
+        for name, item in resolved["inputs"].items():
+            if not Path(item["path"]).is_file() or atomic.digest(item["path"]) != item["sha256"]:
+                raise ValueError("Input changed: " + name)
+        identity = time.strftime("%Y%m%d-%H%M%S-") + uuid.uuid4().hex[:8]
+        directory = config.store(root) / identity
+        directory.mkdir()
         try:
-            page(force=True, refresh=not completed)
-        except Exception:  # noqa: BLE001
+            evidence.freeze(directory, resolved)
+            if experiment.inspect(root, identifier)["revision"] != revision:
+                raise ValueError("Definition changed during launch")
+            now = time.time()
+            manifest = dict(
+                resolved,
+                id=identity,
+                experiment=identifier,
+                request_id=request_id,
+                started=now,
+                deadline=now + resolved["definition"]["limits"]["overall_seconds"],
+                isolation=isolation,
+                authorization=authorization,
+            )
+            atomic.write_json(directory / "manifest.json", manifest)
+            if authorization:
+                atomic.write_json(directory / 'authorization.json', authorization)
+            launch(directory)
+        except Exception:
+            if (directory / "manifest.json").exists():
+                runlog.Journal(directory).append(
+                    "state", {"state": "Failed", "error": "Supervisor launch failed"}
+                )
+            raise
+        return identity
+
+
+def resume(directory, authorization=None):
+    m = atomic.read_json(directory / "manifest.json")
+    resources.preflight(directory,m.get('isolation'))
+    if m.get('authorization'):
+        validate_authorization(authorization)
+        if not authorization or any(authorization.get(k) != m['authorization'][k] for k in ('campaign', 'job')):
+            raise ValueError('Recovery requires authorization for the original campaign and job')
+    elif authorization is not None:
+        raise ValueError('Cannot attach campaign authority to an unregistered historical execution')
+    with lock.exclusive(Path(m["root"]) / ".research" / "operations.lock"):
+        for other in config.store(m["root"]).iterdir():
+            if (other / "manifest.json").exists() and state(other)["state"] in ACTIVE:
+                raise ValueError("An execution is already active or starting")
+        why = experiment.resume_reason(directory, m, state(directory))
+        if why:
+            raise ValueError("Resume unavailable: " + why)
+        # A launch receipt closes the reconnect/double-click race before the supervisor starts.
+        receipt = directory / "resume-launch.json"
+        current_attempt = state(directory)['attempt']
+        if receipt.exists():
+            previous = atomic.read_json(receipt)
+            if time.time()-previous['time'] < 30 and current_attempt <= previous.get('after_attempt',current_attempt):
+                raise ValueError("Resume is already starting")
+        atomic.write_json(receipt, {"time": time.time(),'after_attempt':current_attempt})
+        if authorization:
+            atomic.write_json(directory / 'authorization.json', authorization)
+        launch(directory)
+
+
+def request_stop(directory, force=False):
+    s = state(directory)
+    if s["state"] not in ACTIVE:
+        raise ValueError("Execution is not running")
+    path = directory / "stop-request.json"
+    if force:
+        if not path.exists() or time.time() - atomic.read_json(path)["time"] < 60:
+            raise ValueError("Force stop is available 60 seconds after an unanswered safe stop")
+        atomic.write_json(directory / "force-request.json", {"time": time.time()})
+    elif not path.exists():
+        atomic.write_json(path, {"time": time.time()})
+
+
+def recover_orphans(root):
+    """Restart only the journal owner to reconcile a crashed supervisor, never a trial."""
+    for directory in config.store(root).iterdir():
+        if not (directory / "manifest.json").exists() or state(directory)["state"] not in ACTIVE:
+            continue
+        receipt = directory / "supervisor.json"
+        if not receipt.exists() or time.time() - atomic.read_json(receipt)["started"] < 10:
+            continue
+        try:
+            with lock.exclusive(directory / "supervisor.lock"):
+                env = dict(os.environ, PYTHONPATH=str(directory / "source" / "toolkit"))
+                with (directory / "supervisor.log").open("ab") as log:
+                    lock.spawn(
+                        [sys.executable, "-m", "rl_researcher.runner", "--recover", str(directory)],
+                        cwd=directory,
+                        env=env,
+                        stdout=log,
+                        stderr=log,
+                    )
+        except OSError:
             pass
-        release_lock(lock)
-        close_log()
 
 
-def load_summary(out: Path) -> Dict[str, Any]:
-    p = Path(out) / RESULTS_NAME
-    if not p.is_file():
-        raise FileNotFoundError(f"no {RESULTS_NAME} in {out}; the run has not finished")
-    return read_json(p) or {}
+def reconcile(directory):
+    directory = Path(directory)
+    with lock.exclusive(directory / "supervisor.lock"):
+        journal = runlog.Journal(directory)
+        state = runlog.project(journal.manifest, journal.rows)
+        if state['state'] in ACTIVE and journal.manifest.get('isolation'):
+            pid = state.get('worker_pid')
+            observed = lock.linux_process_identity(pid) if pid else None
+            expected = state.get('worker_start_ticks')
+            confirmed = pid and (observed is None or observed['state']=='Z' or
+                                (expected and observed['start_ticks'] != expected))
+            if not confirmed:
+                journal.append('state', {'state':'Stopping', 'worker_exited':False,
+                                         'error':'Worker termination is unconfirmed; dispatch and resume remain blocked.'})
+                return
+        if state["state"] in ACTIVE:
+            journal.append(
+                "state",
+                {
+                    "state": "Failed",
+                    "error": "Supervisor interrupted. Owned processes have been terminated; resume from validated committed evidence.",
+                    "worker_exited": True,
+                },
+            )
+
+
+def supervise(directory):
+    directory = Path(directory).resolve()
+    manifest = atomic.read_json(directory/'manifest.json')
+    try:
+        with resources.compute_slot(manifest.get('isolation')):
+            resources.preflight(directory,manifest.get('isolation'))
+            _supervise(directory)
+    except (OSError, ValueError) as error:
+        with lock.exclusive(directory/'supervisor.lock'):
+            runlog.Journal(directory).append('state',{'state':'Failed','worker_exited':True,
+                                                     'error':'Supervisor resource boundary: '+str(error)})
+
+
+def _supervise(directory):
+    directory = Path(directory).resolve()
+    with lock.exclusive(directory / "supervisor.lock"):
+        journal = runlog.Journal(directory)
+        manifest = journal.manifest
+        before = runlog.project(manifest, journal.rows)
+        journal.append("attempt", {"attempt": before["attempt"] + 1})
+        token = os.urandom(32)
+        listener = None if manifest.get('isolation') else Listener(("127.0.0.1", 0), authkey=token)
+        messages = queue.Queue()
+
+        def receive(pipe=None):
+            try:
+                connection = pipe if pipe is not None else listener.accept()
+                while True:
+                    message = channel.receive(connection, worker_message=True)
+                    response = queue.Queue()
+                    messages.put((message, response))
+                    reply = response.get()
+                    channel.send(connection, reply)
+                    if "error" in reply:
+                        return
+            except (EOFError, OSError, ValueError, UnicodeError):
+                pass
+
+        if listener:
+            threading.Thread(target=receive, daemon=True).start()
+        env = os.environ.copy()
+        env["PYTHONPATH"] = str(directory / "source" / "toolkit")
+        with (directory / "worker.log").open("ab") as logs:
+            from . import isolation
+            command = isolation.worker_command(directory, manifest) if manifest.get('isolation') else [
+                manifest['python'], '-m', 'rl_researcher.worker', str(directory), str(listener.address[1]), token.hex()]
+            proc = lock.spawn(
+                command,
+                cwd=directory,
+                env=env,
+                stdin=subprocess.PIPE if manifest.get('isolation') else None,
+                stdout=subprocess.PIPE if manifest.get('isolation') else logs,
+                stderr=subprocess.PIPE,
+            )
+            owned = lock.OwnedProcess(proc)
+            log_overflow = threading.Event()
+            def capture_log():
+                count = logs.tell()
+                while True:
+                    block = proc.stderr.read(65536)
+                    if not block:
+                        return
+                    if count+len(block)>8*1024**2:
+                        log_overflow.set()
+                        return
+                    logs.write(block)
+                    logs.flush()
+                    count += len(block)
+            log_thread = threading.Thread(target=capture_log,daemon=True)
+            log_thread.start()
+            if manifest.get('isolation'):
+                threading.Thread(target=receive, args=(channel.Stream(proc.stdout, proc.stdin),), daemon=True).start()
+            finished, forced, stop_seen = None, False, False
+            process_identity = lock.linux_process_identity(proc.pid) if manifest.get('isolation') else None
+            journal.append("state", {"worker_pid": proc.pid, "phase": "Starting worker",
+                                     'worker_start_ticks':process_identity['start_ticks'] if process_identity else None})
+            try:
+                while proc.poll() is None or not messages.empty():
+                    if log_overflow.is_set() or (directory/'events.jsonl').stat().st_size>16*1024**2:
+                        owned.kill()
+                        forced = True
+                        finished = {'state':'Failed','error':'Worker diagnostic output allowance exhausted'}
+                        break
+                    try:
+                        resources.preflight(directory,manifest.get('isolation'))
+                    except (OSError,ValueError) as error:
+                        owned.kill()
+                        forced = True
+                        finished = {'state':'Failed','error':str(error)}
+                        break
+                    stopfile = directory / "stop-request.json"
+                    if stopfile.exists() and not stop_seen:
+                        stop_seen = True
+                        journal.append(
+                            "state",
+                            {
+                                "state": "Stopping",
+                                "stop_requested": atomic.read_json(stopfile)["time"],
+                            },
+                        )
+                    current = runlog.project(manifest, journal.rows)
+                    overall_seconds = manifest["definition"]["limits"]["overall_seconds"]
+                    deadline = current.get("active_since", time.time()) + overall_seconds - current.get("spent_seconds", 0.0)
+                    authority_path = directory / 'authorization.json'
+                    authority = atomic.read_json(authority_path) if manifest.get('authorization') else None
+                    if current["trial"] and current["phase"] != "Finalizing analysis":
+                        deadline = min(
+                            deadline, current["trials"][current["trial"]].get("deadline", deadline)
+                        )
+                    if ((directory / "force-request.json").exists() or time.time() > deadline + 10
+                            or (authority and time.time() >= authority['deadline'])):
+                        forced = True
+                        finished = {
+                            "state": "Failed"
+                            if (directory / "force-request.json").exists()
+                            else "Incomplete",
+                            "error": "Owned worker processes terminated; progress after the committed checkpoint may be lost.",
+                        }
+                        owned.kill()
+                        break
+                    try:
+                        message, response = messages.get(timeout=0.1)
+                    except queue.Empty:
+                        continue
+                    try:
+                        kind, data = message["kind"], message["data"]
+                        value = None
+                        if kind == "publish_checkpoint":
+                            value = checkpoint.publish(
+                                directory, manifest, data["trial"], data["source"], data["decision"]
+                            )
+                            journal.append("checkpoint", value)
+                            checkpoint.retain(directory, journal.rows, data["trial"])
+                        elif kind == "publish_artifact":
+                            value = evidence.artifact(
+                                directory, data["source"], data["label"], data["media_type"]
+                            )
+                            value.update(trial=data.get("trial"), attempt=data.get("attempt"))
+                            journal.append("artifact", value)
+                            atomic.write_json(
+                                directory / "artifacts.json",
+                                [e["data"] for e in journal.rows if e["kind"] == "artifact"],
+                            )
+                        elif kind == "finished":
+                            finished = data
+                            if data.get("results") is not None:
+                                atomic.write_json(directory / "results.json", data.pop("results"))
+                        else:
+                            if kind == "result":
+                                atomic.write_json(
+                                    directory / "trials" / data["trial"] / "result.json",
+                                    data["result"],
+                                )
+                            if kind == "sample":
+                                if (
+                                    data["trial"] != current["trial"]
+                                    or data["attempt"] != current["attempt"]
+                                ):
+                                    raise ValueError(
+                                        "Telemetry identity does not match the active trial and attempt"
+                                    )
+                                preview = data.get("preview")
+                                if preview and (
+                                    preview.get("trial") != data["trial"]
+                                    or preview.get("attempt") != data["attempt"]
+                                    or not (directory / preview["path"]).is_file()
+                                    or atomic.digest(directory / preview["path"])
+                                    != preview["sha256"]
+                                ):
+                                    raise ValueError(
+                                        "Preview must be a committed artifact for this trial and attempt"
+                                    )
+                            journal.append(kind, data)
+                        response.put({"value": value})
+                    except Exception as exc:
+                        response.put({"error": str(exc)})
+                        finished = {
+                            "state": "Failed",
+                            "error": "Required evidence storage failed: " + str(exc),
+                        }
+                        if isinstance(exc,resources.ResourceUnavailable):
+                            finished['resource_fault']=exc.facts
+                        owned.kill()
+                        break
+                proc.wait(timeout=10)
+                if finished is None:
+                    finished = {
+                        "state": "Failed",
+                        "error": "Worker exited without explicit finalization; inspect complete logs.",
+                    }
+                # Stopped/Completed are published only after process exit.
+                journal.append("state", dict(finished, worker_exited=True, forced=forced))
+            finally:
+                owned.close()
+                log_thread.join(timeout=5)
+                resources.cleanup_work(directory,manifest.get('isolation'))
+                if listener:
+                    listener.close()
+
+
+if __name__ == "__main__":
+    if sys.argv[1] == "--recover":
+        reconcile(sys.argv[2])
+    else:
+        supervise(sys.argv[1])
