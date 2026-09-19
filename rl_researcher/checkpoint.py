@@ -1,61 +1,104 @@
-"""The framework's half of a checkpoint.
-
-What a unit saves to resume from is the kind's business (a study saves model and optimizer
-state with torch; the toy kind saves a JSON dict). What the framework needs is small: a
-``checkpoint.json`` sidecar with the step and elapsed time so status can be read without
-loading the payload, an identity check so a checkpoint from a different spec is never
-continued, and the cleanup once the unit has a result.
-"""
-
-from __future__ import annotations
-
+import shutil
+import time
+import uuid
 import os
 from pathlib import Path
-from typing import Any, Dict, Optional, Sequence
-
-from rl_researcher import atomic
-from rl_researcher.spec import SpecError
-from rl_researcher.units import read_json, stamp_now
-
-SIDECAR = "checkpoint.json"
-DEFAULT_NAMES: Sequence[str] = ("checkpoint.pt", "checkpoint.json", "checkpoint.tmp", "checkpoint.state.json")
+from . import atomic, resources
 
 
-def write_sidecar(cell: Path, *, step: int, elapsed_seconds: float, saved: Optional[str] = None) -> str:
-    saved = saved or stamp_now()
-    atomic.write_json(Path(cell) / SIDECAR, {"step": int(step), "elapsed_seconds": round(float(elapsed_seconds), 1),
-                                             "saved": saved})
-    return saved
+def publish(directory, manifest, trial, source, progress):
+    source = Path(source).resolve()
+    if not source.is_relative_to((directory / "trials" / trial / "work").resolve()):
+        raise ValueError("Checkpoint must come from this trial work directory")
+    source = resources.work_source(directory,source)
+    resources.publication_space(directory,resources.retained_bytes(source) if source.is_dir() else source.stat().st_size)
+    parent = directory / "trials" / trial / "checkpoints"
+    parent.mkdir(parents=True, exist_ok=True)
+    stage = parent / (".staging-" + uuid.uuid4().hex)
+    stage.mkdir()
+    if source.is_dir():
+        shutil.copytree(source, stage / "payload")
+    else:
+        (stage / "payload").mkdir()
+        shutil.copy2(source, stage / "payload" / source.name)
+    files = {
+        str(p.relative_to(stage / "payload")).replace("\\", "/"): atomic.digest(p)
+        for p in (stage / "payload").rglob("*")
+        if p.is_file()
+    }
+    if not files:
+        raise ValueError("Checkpoint payload is empty")
+    for f in (stage / "payload").rglob("*"):
+        if f.is_file():
+            with f.open("r+b") as stream:
+                os.fsync(stream.fileno())
+    meta = {
+        "trial": trial,
+        "revision": manifest["revision"],
+        "decision": progress,
+        "files": files,
+        "time": time.time(),
+    }
+    atomic.write_json(stage / "metadata.json", meta)
+    target = parent / uuid.uuid4().hex
+    stage.rename(target)
+    return dict(meta, path=str(target.relative_to(directory)).replace("\\", "/"))
 
 
-def read_sidecar(cell: Path) -> Optional[Dict[str, Any]]:
-    p = Path(cell) / SIDECAR
-    return read_json(p) if p.is_file() else None
+def validate(directory, manifest, checkpoint):
+    path = directory / checkpoint["path"]
+    meta = atomic.read_json(path / "metadata.json")
+    if (
+        meta["revision"] != manifest["revision"]
+        or meta["trial"] != checkpoint["trial"]
+        or meta != {k: v for k, v in checkpoint.items() if k != "path"}
+    ):
+        raise ValueError("Checkpoint identity does not match the execution")
+    for rel, sha in meta["files"].items():
+        p = path / "payload" / rel
+        if not p.is_file() or atomic.digest(p) != sha:
+            raise ValueError("Checkpoint corrupt or missing: " + rel)
+    return path / "payload"
 
 
-def clear_checkpoint(cell: Path, names: Sequence[str] = DEFAULT_NAMES) -> None:
-    for name in names:
-        f = Path(cell) / name
-        if f.exists():
-            f.unlink()
+def retain(directory, rows, trial):
+    committed = [
+        e["data"]["path"] for e in rows if e["kind"] == "checkpoint" and e["data"]["trial"] == trial
+    ]
+    for rel in committed[:-2]:
+        p = directory / rel
+        if p.exists():
+            shutil.rmtree(p)
 
 
-def replace_atomic(tmp: Path, path: Path) -> None:
-    """Move a fully written temporary into place."""
-    os.replace(tmp, path)
+def recover_committed(directory):
+    """Quarantine corrupt stopped-run points and select a verified earlier commit.
 
-
-def verify_identity(meta: Dict[str, Any], *, fingerprint: str, unit: str) -> None:
-    """Refuse a checkpoint written for another spec or another unit: continuing it would
-    report a run nobody registered. ``meta`` may name the unit as ``unit`` or as
-    ``variant``/``arm`` plus ``seed``."""
-    from rl_researcher.units import parse_unit, unit_id
-
-    arm, seed = parse_unit(unit)
-    their_unit = meta.get("unit")
-    if their_unit is None and ("variant" in meta or "arm" in meta):
-        their_unit = unit_id(str(meta.get("variant", meta.get("arm"))), int(meta.get("seed", -1)))
-    if meta.get("spec_fingerprint") != fingerprint or their_unit != unit_id(arm, seed):
-        raise SpecError(f"the checkpoint was written for a different spec or unit "
-                        f"(fingerprint {meta.get('spec_fingerprint')!r}, unit {their_unit!r}); delete it "
-                        f"to start the unit over (the spec changed under a running run)")
+    Keeps all files and journal history. Never repairs a running trial or changes
+    its source, input identity, counters, or cumulative elapsed time.
+    """
+    from . import lock, runlog
+    with lock.exclusive(directory/'supervisor.lock'):
+        manifest=atomic.read_json(directory/'manifest.json')
+        rows=runlog.events(directory)
+        state=runlog.project(manifest,rows)
+        if state['state'] not in {'Stopped','Failed','Incomplete'}:return
+        journal=None
+        quarantined={e['data']['path'] for e in rows if e['kind']=='checkpoint_quarantined'}
+        for trial,saved in state['trials'].items():
+            current=saved.get('checkpoint')
+            if not current:continue
+            try:
+                validate(directory,manifest,current)
+                continue
+            except (ValueError,OSError,KeyError) as error:
+                journal=journal or runlog.Journal(directory)
+                journal.append('checkpoint_quarantined',dict(current,reason=str(error)))
+                quarantined.add(current['path'])
+            candidates=[e['data'] for e in reversed(rows) if e['kind']=='checkpoint' and e['data']['trial']==trial and e['data']['path'] not in quarantined]
+            for candidate in candidates:
+                try:validate(directory,manifest,candidate)
+                except (ValueError,OSError,KeyError):continue
+                journal.append('checkpoint',candidate)
+                journal.append('checkpoint_fallback',{'trial':trial,'from':current['path'],'to':candidate['path']})
+                break

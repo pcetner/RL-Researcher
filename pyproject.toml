@@ -1,71 +1,29 @@
 [build-system]
 requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
-
 [project]
 name = "rl-researcher"
-version = "0.2.0"
-description = "Tooling for LLM-run, human-gated research: pre-registered runs, generated artefacts, a findings ledger, a cost gate"
+version = "0.3.0"
+description = "A local webpage, sequential experiment execution, and per-execution evidence"
 readme = "README.md"
 requires-python = ">=3.10"
-license = { text = "MIT" }
-authors = [{ name = "Peter Cetner" }]
-
-# The framework never imports torch: training lives in the consuming project's adapters.
-dependencies = [
-    "numpy>=1.24",
-    "matplotlib>=3.8",
-    "markdown-it-py>=3.0",
-    "tomlkit>=0.12",
-    "tomli>=2.0; python_version < '3.11'",
-]
-
+license = {text = "MIT"}
+authors = [{name = "Peter Cetner"}]
+dependencies = []
 [project.optional-dependencies]
-browser = ["playwright>=1.40"]
-dev = [
-    "pytest>=7.4",
-    "pytest-timeout>=2.3",
-    "ruff>=0.4",
-    "mypy>=1.8",
-]
-
+dev = ["pytest>=7.4", "ruff>=0.4", "playwright>=1.40"]
+haws = ["haws-core>=0.1.0"]
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["rl_researcher*"]
-
 [tool.setuptools.package-data]
-# The skills, the pre-commit hook and the lessons are the package's own assets, not
-# documentation about it: `install_skills`, `install_hooks`, C10 and C11 all read them at
-# runtime. Kept beside the package they were in the repository and in no wheel built from it,
-# which is invisible from a checkout and total from an install.
-rl_researcher = ["py.typed", "*.ps1", "lessons.md", "skills/*/SKILL.md", "hooks/*", "ui/*.js", "ui/*.css", "ui/fonts/*"]
-
+rl_researcher = ["py.typed", "ui/*.html", "ui/*.js", "ui/*.css", "ui/fonts/*"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-# The repository root on `sys.path`, so `pytest` and `python -m pytest` agree.
-#
-# Two test kinds are registered the way a consuming project registers one, by import path --
-# `tests.test_index:OtherKind` and `tests.test_measurement:Counting` -- which is the point of
-# them: the framework has to load a kind it has never heard of. `python -m pytest` puts the
-# working directory on the path and bare `pytest` does not, so those entries resolved locally
-# and not in CI, and CI had never once passed.
 pythonpath = ["."]
 addopts = "-ra -p no:cacheprovider"
-timeout = 120
-markers = [
-    "tier1: fast, no GPU and no project data - the default gate",
-]
-
 [tool.ruff]
 line-length = 100
 target-version = "py310"
-
 [tool.ruff.lint]
 select = ["E4", "E7", "E9", "F"]
-
-[tool.ruff.lint.per-file-ignores]
-"tests/**" = ["E402"]
-
-[tool.mypy]
-python_version = "3.10"
-ignore_missing_imports = true

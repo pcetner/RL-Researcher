@@ -1,0 +1,43 @@
+{
+  "name": "Deterministic recovery example",
+  "question": "Does a stopped and resumed calculation preserve the same result?",
+  "setup": "Two sequential trials sum integers 1 through 100. Each expected sum is 5,050. This checks the toolkit, not a scientific hypothesis.",
+  "resolver": "experiment.py:resolve",
+  "executor": "experiment.py:execute",
+  "finalizer": "experiment.py:finalize",
+  "sources": [
+    "experiment.py"
+  ],
+  "inputs": {},
+  "dependencies": [],
+  "limits": {
+    "overall_seconds": 1800
+  },
+  "trials": [
+    {
+      "id": "first",
+      "label": "First calculation",
+      "seconds": 600,
+      "decisions": 100,
+      "delay": 0.2
+    },
+    {
+      "id": "second",
+      "label": "Second calculation",
+      "seconds": 600,
+      "decisions": 100,
+      "delay": 0.2
+    }
+  ],
+  "display": {
+    "metrics": [
+      {
+        "id": "sum",
+        "label": "Running sum",
+        "definition": "Sum of integers observed so far",
+        "kind": "cumulative",
+        "digits": 0
+      }
+    ]
+  }
+}

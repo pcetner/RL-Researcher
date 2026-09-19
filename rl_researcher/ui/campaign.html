@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Research campaign</title><link rel="stylesheet" href="/campaign.css"></head>
+<body>
+<header><a class="brand" href="/campaign">Auto-SM64 Research</a><nav><a href="/">Experiment browser</a><a href="/history">Legacy reports</a><span id="connection" role="status">Connecting…</span></nav></header>
+<main>
+<section class="heading"><div><p class="eyebrow">AUTO-SM64 · LOCAL RESEARCH</p><h1>Research campaign</h1></div></section>
+<div id="message" role="status"></div>
+<section id="overview"></section>
+<section id="empty" hidden><h2>No campaign prepared</h2><p>Start with a research objective. Preparation records the intended work and limits; it does not start an experiment.</p></section>
+<details id="history-panel" class="card"><summary>Earlier campaigns and setup checks</summary><p>Selecting a record only opens its evidence. Original outcomes are preserved.</p><label class="chooser">View record <select id="chooser"></select></label></details>
+<details class="card"><summary>Readiness evidence and limitations</summary><section id="runtime" aria-label="Execution readiness"></section></details>
+<details class="card"><summary>Prepare a different campaign</summary><p>Use a new objective when you need a separate campaign.</p><button id="new">Prepare campaign</button></details>
+</main>
+<dialog id="prepare"><form id="prepare-form"><h2>Prepare a research campaign</h2><label>Research objective<textarea name="objective" required rows="3" placeholder="What should this campaign establish?"></textarea></label><p>Eight hours · local experiments · $25 AI-equivalent target · human renewal</p><label>Scientific constraints<textarea name="constraints" required rows="5">Learn from self-generated game frames and actions only.
+No demonstrations, privileged learner inputs, game-specific rewards, curricula, or scripted routes.
+New research methods and consequential conclusions require independent review.
+Keep the procedure frozen during a qualifying first-star attempt.</textarea></label><div class="actions"><button type="button" id="cancel">Cancel</button><button class="primary">Save draft</button></div></form></dialog>
+<script src="/campaign.js"></script></body></html>
